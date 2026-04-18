@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Claude Remote</string>
+    <string name="notif_channel_status">Connection status</string>
+    <string name="notif_channel_status_desc">Persistent notification while connected to a daemon.</string>
+    <string name="notif_channel_permissions">Permission requests</string>
+    <string name="notif_channel_permissions_desc">Wakes you when Claude needs approval to run a tool.</string>
+    <string name="notif_channel_complete">Task complete</string>
+    <string name="notif_channel_complete_desc">Lets you know when Claude finishes a task.</string>
+
+    <string name="notif_perm_action_allow">Allow</string>
+    <string name="notif_perm_action_always">Always</string>
+    <string name="notif_perm_action_deny">Deny</string>
+    <string name="notif_perm_action_voice_label">Reply</string>
+</resources>

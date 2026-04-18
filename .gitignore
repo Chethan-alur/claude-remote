@@ -1,0 +1,27 @@
+### Python ###
+daemon/.venv/
+daemon/build/
+daemon/dist/
+daemon/*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+### Android ###
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.cxx/
+*.iml
+*.apk
+*.aab
+
+### macOS / Linux / IDE noise ###
+.DS_Store
+*.swp
+.vscode/

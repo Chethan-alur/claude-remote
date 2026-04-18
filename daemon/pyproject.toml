@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-remote-daemon"
+version = "0.1.0"
+description = "Daemon that bridges Claude Code on a dev machine to the Claude Remote Android app"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12.0",
+    "ptyprocess>=0.7.0",
+    "zeroconf>=0.131.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+claude-remote-daemon = "claude_remote_daemon.main:main"
+claude-remote-hook = "hook_bin.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claude_remote_daemon*", "hook_bin*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
