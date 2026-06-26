@@ -1,12 +1,13 @@
 package com.claude.remote.ui
 
+import android.annotation.SuppressLint
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -22,16 +23,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import org.json.JSONObject
 
 /**
  * Terminal view for one session.
  *
- * Renders the accumulated PTY output as a scrolling monospace text block and
- * lets the user send a prompt back to Claude. ANSI escape codes are shown raw
- * for now; xterm.js rendering inside a WebView is deferred polish (see task 4).
+ * Output is rendered by xterm.js inside a WebView (a real terminal emulator),
+ * so claude's ANSI/TUI escape codes display correctly. The WebView is a
+ * read-only renderer; input is handled by the native text field below it,
+ * which sidesteps the soft-keyboard quirks of typing into a WebView.
+ *
+ * We feed only the *new* tail of the accumulated output buffer to xterm on each
+ * update (xterm.write appends), tracking how much has been written.
  */
+@SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalScreen(
@@ -41,15 +48,30 @@ fun TerminalScreen(
     onSendInput: (String) -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
-    val scroll = rememberScrollState()
-
-    // Keep the view pinned to the latest output as it streams in.
-    LaunchedEffect(output) { scroll.animateScrollTo(scroll.maxValue) }
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var ready by remember { mutableStateOf(false) }
+    var written by remember { mutableStateOf(0) }
 
     fun submit() {
         if (draft.isNotEmpty()) {
             onSendInput(draft + "\n")
             draft = ""
+        }
+    }
+
+    // Stream new output into xterm once the page has loaded.
+    LaunchedEffect(output, ready) {
+        val wv = webView
+        if (!ready || wv == null) return@LaunchedEffect
+        if (output.length < written) {
+            // Buffer shrank (reconnect/cleared) — reset and replay from scratch.
+            wv.evaluateJavascript("window.termReset && window.termReset();", null)
+            written = 0
+        }
+        if (output.length > written) {
+            val delta = output.substring(written)
+            written = output.length
+            wv.evaluateJavascript("window.termWrite(${JSONObject.quote(delta)});", null)
         }
     }
 
@@ -61,24 +83,25 @@ fun TerminalScreen(
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(12.dp)
-        ) {
-            Text(
-                text = output.ifEmpty { "Attaching…" },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(scroll),
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            AndroidView(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                ready = true
+                            }
+                        }
+                        loadUrl("file:///android_asset/term/term.html")
+                        webView = this
+                    }
+                },
             )
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedTextField(

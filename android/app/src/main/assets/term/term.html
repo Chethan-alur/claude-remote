@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+    #term { height: 100%; width: 100%; }
+    .xterm { padding: 4px; }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+  <script src="xterm.js"></script>
+  <script>
+    // Dimensions match the daemon's PTY (rows=40, cols=120) so claude's TUI
+    // lays out correctly. Input is handled by a native text field, so stdin
+    // is disabled here — this terminal is a read-only renderer.
+    var term = new Terminal({
+      cols: 120,
+      rows: 40,
+      fontSize: 10,
+      scrollback: 5000,
+      disableStdin: true,
+      convertEol: false,
+      theme: { background: '#000000' }
+    });
+    term.open(document.getElementById('term'));
+
+    // Bridge API called from Android via evaluateJavascript:
+    window.termWrite = function (s) { term.write(s); };
+    window.termReset = function () { term.reset(); };
+    window.__termReady = true;
+  </script>
+</body>
+</html>
