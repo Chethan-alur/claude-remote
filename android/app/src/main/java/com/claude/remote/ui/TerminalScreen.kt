@@ -1,72 +1,97 @@
 package com.claude.remote.ui
 
-import android.annotation.SuppressLint
-import android.webkit.JavascriptInterface
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * Terminal view. Hosts xterm.js inside a WebView and bridges it to the
- * SessionService.
+ * Terminal view for one session.
  *
- * TODO(claude-code):
- *   - Bundle xterm.js as an asset under android/app/src/main/assets/term/
- *     (xterm.css, xterm.js, addon-fit, plus a tiny term.html that wires
- *     them together)
- *   - JS bridge: term sends keystrokes via [TerminalBridge.onInput],
- *     daemon output is fed in via webView.evaluateJavascript("term.write(${json})")
- *   - PermissionCard overlay when a permission_request arrives for this
- *     session. Use a Compose Card pinned above the WebView.
- *
- * For Day 3, a plain TextField + scrolling Text composable is fine — the
- * xterm.js work is polish, not function.
+ * Renders the accumulated PTY output as a scrolling monospace text block and
+ * lets the user send a prompt back to Claude. ANSI escape codes are shown raw
+ * for now; xterm.js rendering inside a WebView is deferred polish (see task 4).
  */
-@SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalScreen(
     sessionId: String,
+    output: String,
+    onBack: () -> Unit,
     onSendInput: (String) -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
+    val scroll = rememberScrollState()
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        AndroidView(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    settings.javaScriptEnabled = true
-                    webViewClient = WebViewClient()
-                    addJavascriptInterface(TerminalBridge(onSendInput), "AndroidBridge")
-                    loadUrl("file:///android_asset/term/term.html")
-                }
-            },
-        )
+    // Keep the view pinned to the latest output as it streams in.
+    LaunchedEffect(output) { scroll.animateScrollTo(scroll.maxValue) }
 
-        OutlinedTextField(
-            value = draft,
-            onValueChange = { draft = it },
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            placeholder = { androidx.compose.material3.Text("Send to Claude...") },
-            textStyle = MaterialTheme.typography.bodyMedium,
-        )
+    fun submit() {
+        if (draft.isNotEmpty()) {
+            onSendInput(draft + "\n")
+            draft = ""
+        }
     }
-}
 
-class TerminalBridge(private val onInput: (String) -> Unit) {
-    @JavascriptInterface
-    fun onInput(data: String) { onInput.invoke(data) }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(sessionId, style = MaterialTheme.typography.titleSmall) },
+                navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(12.dp)
+        ) {
+            Text(
+                text = output.ifEmpty { "Attaching…" },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(scroll),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Send to Claude…") },
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton(onClick = { submit() }, enabled = draft.isNotEmpty()) {
+                    Text("Send")
+                }
+            }
+        }
+    }
 }

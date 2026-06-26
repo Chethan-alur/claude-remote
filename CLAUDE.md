@@ -1,0 +1,136 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project status: core implemented, permission/pairing layers pending
+
+The architecture, wire protocol, and class shapes are fully designed in the docs. Before writing code, read `docs/FOR_CLAUDE_CODE.md` (the brief) and `docs/IMPLEMENTATION_PLAN.md` (the four-day build order).
+
+**Implemented and tested (daemon "Day 1" core — the app can create live sessions, stream output, and send prompts):**
+
+- `daemon/claude_remote_daemon/session.py` — `SessionManager.create()` spawns the session command in a PTY, pumps output via `loop.add_reader`, and finalises on exit via a watchdog. Subscribers carry encoded protocol frames; `broadcast()` fans them out, `append_output()` wraps PTY bytes into `Output` frames, and the byte ring buffer backs `replay()`.
+- `daemon/claude_remote_daemon/server.py` — `_dispatch` implements `SessionCreate` (spawn → `SessionCreated` → auto-attach), `SessionAttach` (subscribe + optional replay + per-client forward task with disconnect cleanup), and `Input`. Auth is still a dev passthrough.
+- `daemon/claude_remote_daemon/main.py` — `run()` wires `AuthStore` + `SessionManager` + `HookBridge` + `WsServer` + `Discovery` and races them against a signal-driven stop. A `--claude-cmd` / `CLAUDE_REMOTE_CLAUDE_CMD` override lets tests spawn a fake process instead of `claude`.
+- `daemon/claude_remote_daemon/hooks.py` — `HookBridge` handles the Unix-socket protocol: it parses the framed payload (session-id line + hook JSON), routes `PermissionRequest`/`PreToolUse` to a `PermissionRequest` frame (registers a Future, broadcasts to subscribers, awaits the phone's decision with a 5-min auto-deny timeout), and `Notification`/`Stop` to `Notification` frames. `resolve()` completes the Future; per-session allow/deny-always preferences short-circuit repeats. Decisions map to the **Claude Code 2.1.x** schema (`hookSpecificOutput.decision.behavior` for `PermissionRequest`). Hook isolation is by session correlation: only requests whose `CLAUDE_REMOTE_SESSION` matches a daemon-spawned session are acted on; everything else passes through (`{"continue": true}`).
+- `daemon/tests/` — protocol round-trips, an end-to-end WebSocket smoke test (`create → output → input`), and hook-bridge tests (allow/deny/always, timeout, passthrough, notification) driven through an in-memory reader to avoid the sandbox's Unix-socket restriction. Run with `.venv/bin/python -m pytest`.
+- `scripts/install-hooks.sh` — registers `PermissionRequest` + `Notification` + `Stop` (matching 2.1.x) at `claude-remote-hook`; jq's `*` merge replaces those event arrays, so running it switches the active backend to the daemon.
+- Android `SessionService` / `MainActivity` / `SessionsScreen` / `TerminalScreen` — observable session state, navigation, New Session dialog, terminal output rendering, and prompt send (the "full control" vertical slice).
+
+- `daemon/claude_remote_daemon/discovery.py` — mDNS advertise implemented via `AsyncZeroconf` (`_claudecode._tcp`), resilient to multicast failure.
+- `server.py` — serves `/pair` on the WebSocket port (code in the query string: `POST /pair?code=NNNNNN&device=<name>` → `{"token": "..."}`), and gates `hello` on `AuthStore.verify` behind `--require-auth` (default off so dev works pre-pairing).
+
+**Still stubbed / pending, in dependency order:**
+
+- Android — pairing flow (`PairingScreen` → `/pair` → DataStore), DataStore persistence of token/daemon address (incl. WireGuard host), `WsClient` reconnect/heartbeat, in-app permission card, xterm.js rendering.
+- End-to-end verification against the real `claude` binary on a device (the daemon is unit-tested but not yet exercised through a live PTY session + phone).
+
+`auth.py` and `hook_bin/main.py` were complete from the scaffold and are unchanged.
+
+Two environment notes from implementation: the `websockets` legacy `WebSocketServerProtocol` API is deprecated in websockets ≥14 (works, but a migration is pending); and the hook bridge's `AF_UNIX` socket path must stay under ~108 characters (the default `/tmp/claude-remote.sock` is fine).
+
+## What this project is
+
+Control Claude Code running on a dev machine from an Android phone over the LAN. The phone receives push notifications when Claude needs permission and can Allow/Deny/Always from the lock screen. Three pieces:
+
+```
+[Android app]  <-- JSON over WebSocket (LAN) -->  [Python daemon]
+                                                        | spawns in a PTY
+                                                        v
+                                                  [Claude Code CLI]
+                                                        | PreToolUse / Stop / Notification hooks
+                                                        v
+                                          [claude-remote-hook] --Unix socket--> daemon
+```
+
+The load-bearing idea: permission detection goes through **Claude Code's official hooks**, never terminal scraping. Claude Code invokes the tiny `claude-remote-hook` CLI on each hook event; the CLI forwards the payload over a Unix socket to the daemon, which asks the phone and returns the decision. The daemon converts the phone's decision into the `{"decision": "approve"|"block"}` JSON the hook protocol expects.
+
+## Three-way protocol sync (critical)
+
+The wire protocol is defined in **three places that must be kept in lockstep**. Changing a message means editing all three:
+
+1. `protocol/messages.md` — the authoritative spec (prose + JSON examples).
+2. `daemon/claude_remote_daemon/protocol.py` — Python dataclasses + `encode`/`decode` (registry keyed on the `type` field).
+3. `android/app/src/main/java/com/claude/remote/model/Messages.kt` — Kotlin `@Serializable` sealed interface with `@JsonClassDiscriminator("type")`.
+
+Message types: `hello`, `welcome`, `session_create`, `session_created`, `session_attach`, `input`, `output`, `permission_request`, `permission_response`, `notification`, `ping`/`pong`, `error`. Pairing is **out of band** over HTTP (`POST /pair`), not part of the WebSocket protocol.
+
+Session status values: `running`, `waiting` (permission pending), `idle` (Claude finished its turn), `dead`. Permission decisions: `allow`, `deny`, `allow_always`, `deny_always` (the `*_always` variants store a per-session preference keyed on tool + input shape).
+
+## Daemon — commands
+
+```bash
+# One-shot setup (creates daemon/.venv, installs the package + hook CLI editable)
+./scripts/setup-daemon.sh
+
+# Manual equivalent
+cd daemon && python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+
+# Install the dev extras (pytest, pytest-asyncio, ruff)
+pip install -e '.[dev]'
+
+# Run the daemon (-v / -vv raise log verbosity)
+claude-remote-daemon -v --port 8765
+
+# Lint
+ruff check daemon/
+
+# Tests (none exist yet; start with protocol.py encode/decode round-trips)
+pytest                      # all
+pytest daemon/tests/test_protocol.py::test_name   # a single test
+
+# Register the hooks in ~/.claude/settings.json (idempotent, backs up first; requires jq).
+# Expects the hook CLI symlinked to a stable path first:
+sudo ln -sf "$(pwd)/daemon/.venv/bin/claude-remote-hook" /usr/local/bin/claude-remote-hook
+./scripts/install-hooks.sh
+```
+
+Note: `install-hooks.sh` contains a stale error message referring to a Go build (`go build -o claude-remote-hook`). The hook is Python, installed via `pip install -e .`; ignore the Go reference.
+
+### Testing the daemon without the app
+
+```bash
+# Drive the WebSocket by hand
+websocat ws://localhost:8765
+# then send: {"type":"hello","token":"x"}
+#            {"type":"session_create","name":"test","cwd":"/tmp"}
+#            {"type":"input","session":"sess_xxx","data":"hi\n"}
+
+# Test the hook CLI standalone (fails open to approve when no daemon is running)
+echo '{"event":"PreToolUse","tool_name":"Bash"}' | CLAUDE_REMOTE_SESSION=sess_test claude-remote-hook
+```
+
+## Android — commands
+
+```bash
+cd android
+./gradlew installDebug      # build + install on connected device/emulator
+./gradlew assembleDebug     # build APK only
+./gradlew lint
+```
+
+The emulator reaches the daemon on the host at `10.0.2.2:8765` (set as `DEFAULT_DAEMON_HOST` in the debug build config). Gradle 9, `compileSdk`/`targetSdk` 34, `minSdk` 28, JVM target 17. Stack: Jetpack Compose (Material3), `kotlinx.serialization`, `OkHttp` WebSocket, `NsdManager` for mDNS — no DI framework, no Rx; do not introduce one.
+
+## Daemon architecture notes
+
+- **asyncio + `loop.add_reader(proc.fd, ...)`** for PTY reads — Linux/WSL only, which is intentional for the POC. Do not switch to thread-pool reads unless the user explicitly asks for Windows-native support. `ptyprocess` is the chosen PTY library; do not replace it with `pexpect` or `pty.fork()`.
+- One `Session` owns one `ptyprocess.PtyProcess` running `claude`, plus a bounded ~1 MB output ring buffer (`deque`) for reconnect replay, a list of subscriber `asyncio.Queue`s (drop on slow consumers rather than block the PTY pump), and a `pending_perms` dict of request-id → `Future`.
+- The session id is passed to the spawned `claude` via the `CLAUDE_REMOTE_SESSION` env var; the hook CLI reads it and prepends it as a header line so the daemon can correlate the hook payload to a session without parsing every payload variant.
+- The hook bridge **fails open**: any error or unreachable daemon yields `{"decision":"approve"}` so a daemon crash never bricks Claude Code. Permission requests time out after 5 minutes (`PERMISSION_TIMEOUT_SEC`) and auto-deny.
+- State (device tokens) lives at `~/.claude-remote/devices.json`; the hook Unix socket defaults to `/tmp/claude-remote.sock`.
+
+## Constraints the user has set (from docs/FOR_CLAUDE_CODE.md)
+
+- **Python (asyncio) for the daemon** — chosen deliberately; do not rewrite in another language.
+- **Local-network only** for the POC. No cloud relay, no FCM, no telemetry — these are v2.
+- **Single user.** No multi-tenancy or per-user encryption.
+- **No new Python dependencies** beyond `websockets`, `ptyprocess`, `zeroconf` without asking first.
+- **Do not modify `~/.claude/settings.json` directly** — changes go through `scripts/install-hooks.sh` for the user to run.
+- **Notifications must work from the lock screen** (the entire point): use Android `RemoteInput` for voice replies and direct action buttons.
+
+### Python style (from the same brief)
+
+Prefer dataclasses over plain dicts; `match/case` for message dispatch; type-annotate everything (mypy strict is realistic at this size); keep modules under ~300 lines. Build day by day per `docs/IMPLEMENTATION_PLAN.md` rather than everything at once — the protocol is validated and adjusted in the early days.
+
+### Anti-goals (do not build)
+
+A full IDE, chat-history sync, a project file browser, cloud conversation sync, or any LLM feature in the app itself — the app is a remote control, not an assistant.

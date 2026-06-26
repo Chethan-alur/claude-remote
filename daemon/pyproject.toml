@@ -31,3 +31,7 @@ include = ["claude_remote_daemon*", "hook_bin*"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -16,10 +16,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -28,24 +30,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.claude.remote.model.SessionInfo
+import com.claude.remote.net.WsClient
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionsScreen(
     sessions: List<SessionInfo>,
+    connState: WsClient.ConnState,
     onNewSession: () -> Unit,
     onOpen: (SessionInfo) -> Unit,
+    onSettings: () -> Unit,
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Sessions") },
+                actions = {
+                    val (label, color) = when (connState) {
+                        WsClient.ConnState.Connected -> "● connected" to Color(0xFF22C55E)
+                        WsClient.ConnState.Connecting -> "● connecting" to Color(0xFFF59E0B)
+                        WsClient.ConnState.Disconnected -> "● offline" to Color(0xFFEF4444)
+                    }
+                    Text(
+                        label,
+                        color = color,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(end = 8.dp),
+                    )
+                    TextButton(onClick = onSettings) { Text("Daemon") }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(),
             )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNewSession,
-                text = { Text("New session") },
+                text = { Text("Open project") },
                 icon = { Text("+") },
             )
         },
@@ -73,9 +93,9 @@ private fun EmptyState(padding: PaddingValues) {
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("No sessions yet", style = MaterialTheme.typography.titleMedium)
+            Text("No active sessions", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Tap + to start a new Claude Code session",
+                "Tap “Open project” to browse a folder's past Claude sessions or start a new one",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -86,6 +106,7 @@ private fun EmptyState(padding: PaddingValues) {
 @Composable
 private fun SessionCard(session: SessionInfo, onClick: () -> Unit) {
     Card(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(),

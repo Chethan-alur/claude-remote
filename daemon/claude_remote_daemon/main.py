@@ -14,9 +14,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import shlex
 import signal
 import sys
 from pathlib import Path
+
+from .auth import AuthStore
+from .discovery import Discovery
+from .hooks import HookBridge
+from .server import WsServer
+from .session import SessionManager
 
 logger = logging.getLogger("claude_remote_daemon")
 
@@ -36,6 +44,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path.home() / ".claude-remote",
         help="Directory for tokens, session metadata",
     )
+    p.add_argument(
+        "--claude-cmd",
+        default=os.environ.get("CLAUDE_REMOTE_CLAUDE_CMD", "claude"),
+        help="Command to spawn per session (override for testing without claude)",
+    )
+    p.add_argument(
+        "--require-auth",
+        action="store_true",
+        help="Reject WebSocket clients whose token is not a paired device "
+        "(default: accept any token with a warning, for early dev)",
+    )
     p.add_argument("-v", "--verbose", action="count", default=0)
     return p.parse_args(argv)
 
@@ -43,29 +62,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def run(args: argparse.Namespace) -> None:
     args.state_dir.mkdir(parents=True, exist_ok=True)
 
-    # TODO(claude-code):
-    #   auth = AuthStore(args.state_dir / "devices.json")
-    #   sessions = SessionManager()
-    #   hooks = HookBridge(args.hook_socket, sessions)
-    #   server = WsServer(args.bind, args.port, sessions, hooks, auth)
-    #   discovery = Discovery("claude-remote", args.port)
-    #
-    #   print(f"Pairing code: {auth.current_code()}", flush=True)
-    #
-    #   await asyncio.gather(
-    #       hooks.serve(),
-    #       server.serve(),
-    #       discovery.advertise(),
-    #   )
+    claude_cmd = shlex.split(args.claude_cmd) if args.claude_cmd else ["claude"]
 
-    # Placeholder so `claude-remote-daemon` runs without crashing during dev.
-    logger.info("daemon up on %s:%d (placeholder — implement run())", args.bind, args.port)
+    auth = AuthStore(args.state_dir / "devices.json")
+    sessions = SessionManager(hook_socket=args.hook_socket, claude_cmd=claude_cmd)
+    hooks = HookBridge(args.hook_socket, sessions)
+    server = WsServer(
+        args.bind, args.port, sessions, hooks, auth, require_auth=args.require_auth
+    )
+    discovery = Discovery("claude-remote", args.port)
+
+    print(f"Pairing code: {auth.current_code()}", flush=True)
+    logger.info("daemon up on %s:%d (spawn cmd: %s)", args.bind, args.port, claude_cmd)
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    await stop.wait()
-    logger.info("shutting down")
+
+    stop_task = asyncio.create_task(stop.wait())
+    work = [
+        asyncio.create_task(hooks.serve(), name="hooks"),
+        asyncio.create_task(server.serve(), name="server"),
+        asyncio.create_task(discovery.advertise(), name="discovery"),
+    ]
+    try:
+        done, pending = await asyncio.wait(
+            {stop_task, *work}, return_when=asyncio.FIRST_COMPLETED
+        )
+        # If a component crashed (rather than a signal), surface it.
+        for t in done:
+            if t is not stop_task and not t.cancelled() and t.exception() is not None:
+                logger.error("component %s crashed", t.get_name(), exc_info=t.exception())
+    finally:
+        for t in (stop_task, *work):
+            t.cancel()
+        await sessions.shutdown()
+        logger.info("shutting down")
 
 
 def main() -> None:

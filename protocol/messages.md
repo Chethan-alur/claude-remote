@@ -43,10 +43,32 @@ Status values: `running`, `waiting` (permission pending), `idle` (Claude finishe
 ### session_create (phone → daemon)
 
 ```json
-{ "type": "session_create", "name": "new-feature", "cwd": "/home/josh/code/webapp" }
+{ "type": "session_create", "name": "new-feature", "cwd": "/home/josh/code/webapp", "resume_id": "" }
 ```
 
-Daemon spawns a `claude` process in the given cwd. Replies with `session_created` on success, `error` on failure.
+Daemon spawns a `claude` process in the given cwd. Replies with `session_created` on success, `error` on failure. If `resume_id` is non-empty, the daemon resumes that past session (`claude --resume <resume_id>`) instead of starting fresh; `name` is then just a label (use the session's title).
+
+### list_sessions (phone → daemon)
+
+```json
+{ "type": "list_sessions", "cwd": "/home/josh/code/webapp" }
+```
+
+Asks for the past Claude Code sessions stored on disk for that project folder (what `claude --resume` / the VS Code extension lists). Daemon replies with `project_sessions`.
+
+### project_sessions (daemon → phone)
+
+```json
+{
+  "type": "project_sessions",
+  "cwd": "/home/josh/code/webapp",
+  "sessions": [
+    { "id": "976f4811-...", "title": "Refactor auth module", "modified": 1729267200, "messages": 42 }
+  ]
+}
+```
+
+`id` is the Claude session id (pass it back as `resume_id` in `session_create` to resume). `title` is the session's `ai-title` (or its first message). `modified` is epoch seconds of the transcript's last write; `messages` is a rough user+assistant turn count. Newest first.
 
 ### session_created (daemon → phone)
 

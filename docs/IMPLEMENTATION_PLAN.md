@@ -2,62 +2,99 @@
 
 Four working days to a usable POC. Each day produces something testable end-to-end at its own level of the stack. Resist the urge to leap ahead — protocol assumptions get validated in the early days and often need adjustment.
 
-## Day 1 — Daemon, PTY, raw WebSocket echo
+## Progress tracker
+
+**This document is the canonical progress tracker for the build.** Update the checkboxes here as work lands.
+
+Legend: `[x]` done · `[ ]` not started · `[~]` partial (see note). A trailing **⚠ unverified** means the work is implemented in code but has not yet been exercised end-to-end on a real device or against the real `claude` binary.
+
+**Last updated: 2026-06-26.** Daemon Days 1, 2 and the daemon-side of Day 4 (mDNS advertise, `/pair`, token auth) plus a project session browser are implemented and unit-tested (`cd daemon && .venv/bin/python -m pytest` → **42 passing**). The Android app builds (toolchain set up via `scripts/setup-android-toolchain.sh`) and has been **verified live**: a Pixel 8 over the corporate VPN connected to the daemon, created/resumed a session, and delivered prompts to a real `claude` process. Added since the original plan: a **configurable daemon address** (in-app, SharedPreferences), connection/error feedback, and a **VS Code-style session browser** (`ProjectScreen` → `list_sessions`/resume). Remaining: a **readable terminal** (xterm.js renderer — output is currently raw ANSI), plus pairing/DataStore/reconnect and real auth. To test on Windows via an emulator, see **[`EMULATOR_TESTING.md`](EMULATOR_TESTING.md)**. See also the "Cross-cutting work" section below.
+
+## Day 1 — Daemon, PTY, raw WebSocket echo  ✅ complete
 
 Goal: Run the daemon, connect with `websocat`, see Claude Code's output stream into the terminal, send keystrokes back.
 
 Tasks:
-- [ ] Confirm `pip install -e .` works in the venv; `claude-remote-daemon -v` runs without crashing
-- [ ] `claude_remote_daemon/session.py` — implement `SessionManager.create()`: spawn `claude` via `ptyprocess.PtyProcess.spawn`, wire `loop.add_reader(proc.fd, ...)` to call `session.append_output()`, watchdog task that flips status to DEAD on exit
-- [ ] `claude_remote_daemon/server.py` — flesh out `_dispatch`: implement `SessionAttach` (subscribe a queue, optional replay), `Input` (write bytes to PTY), `SessionCreate` (spawn + auto-attach)
-- [ ] `claude_remote_daemon/main.py` — replace placeholder `run()` with the full wiring (SessionManager + WsServer + auth + discovery), `asyncio.gather` them all
-- [ ] Skip auth checks for Day 1 — accept any token in `Hello`
+- [x] Confirm `pip install -e .` works in the venv; `claude-remote-daemon -v` runs without crashing
+- [x] `claude_remote_daemon/session.py` — `SessionManager.create()` spawns via `ptyprocess.PtyProcess.spawn`, pumps output with `loop.add_reader(proc.fd, ...)` into `append_output()`, watchdog flips status to DEAD on exit. Subscribers now carry encoded protocol frames (`broadcast`); the byte ring buffer backs `replay()`.
+- [x] `claude_remote_daemon/server.py` — `_dispatch` implements `SessionAttach` (subscribe + optional replay + per-client forward task with cleanup), `Input` (write to PTY), `SessionCreate` (spawn → `SessionCreated` → auto-attach)
+- [x] `claude_remote_daemon/main.py` — `run()` wires SessionManager + WsServer + HookBridge + AuthStore + Discovery and races them against a signal-driven stop. Added a `--claude-cmd` / `CLAUDE_REMOTE_CLAUDE_CMD` override for testing without the real `claude`.
+- [x] Skip auth checks for Day 1 — accept any token in `Hello` (still a dev passthrough; real check is a Day 4 item)
 
-Test: `claude-remote-daemon -v` then in another shell `websocat ws://localhost:8765`. Send `{"type":"hello","token":"x"}`, then `{"type":"session_create","name":"test","cwd":"/tmp"}`, then `{"type":"input","session":"sess_xxx","data":"hi\n"}`. See Claude Code's output stream back as `output` frames.
+Test: covered by an automated end-to-end test (`tests/test_integration.py`) that drives a real WebSocket through `hello → welcome → session_create → output → input` using a `bash` echo loop in place of `claude`. The manual `websocat` flow from the original plan still works against `claude-remote-daemon -v`.
 
-## Day 2 — Hook bridge, permission round-trip
+## Day 2 — Hook bridge, permission round-trip  ✅ implemented (live verification pending)
 
-Goal: When Claude Code asks for permission, your `websocat` session receives a JSON `permission_request`, you type back a JSON `permission_response`, and Claude Code proceeds.
+Goal: When Claude Code asks for permission, the phone receives a JSON `permission_request`, sends back a `permission_response`, and Claude Code proceeds.
 
-Tasks:
-- [ ] `claude_remote_daemon/hooks.py` — implement `HookBridge._handle`: parse the framed payload (first line = session id, rest = hook JSON), build a `PermissionRequest`, register a Future in `session.pending_perms`, fan out the request to subscribers, await the Future with timeout
-- [ ] `claude_remote_daemon/hooks.py` — implement `HookBridge.resolve()` to find and complete the Future
-- [ ] `claude_remote_daemon/server.py` — wire `PermissionResponse` dispatch to call `hooks.resolve()`
-- [ ] `claude_remote_daemon/session.py` — store per-session "always allow/deny" preferences keyed by `(tool_name, input_signature)`; `HookBridge` consults them before bothering the user
-- [ ] `scripts/install-hooks.sh` — verify it generates the right entries; run it
-- [ ] `hook_bin/main.py` — already complete, test end-to-end
-
-Test: Run daemon. Run hook installer. Open `websocat` session, create a session, ask Claude to run a Bash command. See `permission_request` arrive. Send `{"type":"permission_response","id":"req_xxx","decision":"allow"}`. Watch Claude execute.
-
-## Day 3 — Android app, single session, hardcoded IP
-
-Goal: Open the app on a phone (or emulator), see live terminal output from the daemon, send input, see permission requests as in-app cards.
+Note: the hook I/O schema was verified against the installed **Claude Code 2.1.185**, which uses the `PermissionRequest` and `Notification` events (not the scaffold's assumed `PreToolUse` + `{"decision":"approve"}`). Decisions map to `hookSpecificOutput.decision.behavior`.
 
 Tasks:
-- [ ] Open `android/` in Android Studio; sync Gradle; run on emulator
-- [ ] Verify `WsClient.kt` connects to the daemon at `10.0.2.2:8765` (emulator's host alias) and decodes the `welcome` frame
-- [ ] `SessionService.kt` — connect to daemon on start, expose messages flow to UI, auto-attach to first session for Day 3 simplicity
-- [ ] `MainActivity.kt` + `SessionsScreen.kt` — populate from real `welcome.sessions`; add "New session" flow that prompts for name + cwd
-- [ ] `TerminalScreen.kt` — for Day 3, skip xterm.js. Render output as a scrolling `Text` in a `LazyColumn` (ANSI codes will look ugly; that's fine for now). Wire the input field to send `Input` messages.
-- [ ] In-app `PermissionCard` Composable that shows when a `PermissionRequest` arrives in the messages flow
+- [x] `claude_remote_daemon/hooks.py` — `HookBridge._handle` parses the framed payload (first line = session id, rest = hook JSON), builds a `PermissionRequest`, registers a Future in `session.pending_perms`, fans it out to subscribers, awaits with a 5-min auto-deny timeout
+- [x] `claude_remote_daemon/hooks.py` — `HookBridge.resolve()` finds and completes the Future
+- [x] `claude_remote_daemon/server.py` — `PermissionResponse` dispatch calls `hooks.resolve()`
+- [x] `claude_remote_daemon/session.py` — per-session "always allow/deny" preferences (`perm_prefs`, keyed by tool + input signature); the bridge consults them before prompting again
+- [x] `scripts/install-hooks.sh` — corrected to register `PermissionRequest` + `Notification` + `Stop` at `claude-remote-hook` (was wrongly `PreToolUse`); jq `*` merge replaces those event arrays. **The user still needs to run it** to activate the daemon backend.
+- [~] `hook_bin/main.py` — unchanged and complete; bridge logic unit-tested via an in-memory reader (`tests/test_hooks.py`). **⚠ unverified** end-to-end against the real `claude` binary.
 
-Test: Start daemon on dev machine. Launch app on emulator (same WiFi). See terminal output. Trigger a permission request in Claude. See the card appear. Tap Allow. Watch Claude continue.
+Hook isolation (added requirement): solved by session correlation — the bridge acts only on requests whose `CLAUDE_REMOTE_SESSION` matches a daemon-spawned session; any other `claude` (e.g. an interactive VSCode session) passes through with `{"continue": true}` and is untouched.
 
-## Day 4 — Notifications, mDNS, polish
+Test: ⚠ Not yet run live. Pending: run the daemon, run the hook installer, create a session, ask Claude to run a Bash command, confirm `permission_request` reaches the phone and a decision flows back.
+
+## Day 3 — Android app, single session, hardcoded IP  🚧 code written, device build pending
+
+Goal: Open the app on a phone (or emulator), see live terminal output from the daemon, send input, create sessions, see permission requests.
+
+Tasks:
+- [ ] Open `android/` in Android Studio; sync Gradle; run on emulator — **⚠ not done in this environment** (no Android SDK/Gradle here; the app must be built in Android Studio). A latent compile error in the scaffold was fixed: `SessionsScreen`/`TerminalScreen` now carry `@OptIn(ExperimentalMaterial3Api::class)`.
+- [~] `WsClient.kt` connects to `10.0.2.2:8765` and decodes `welcome` — code present and unchanged from scaffold; **⚠ unverified** on a device
+- [x] `SessionService.kt` — connects on start, exposes observable state (`sessions`, `conn`, per-session `outputFor`) and actions (`createSession`/`attach`/`sendInput`); attaches when a session is opened
+- [x] `MainActivity.kt` + `SessionsScreen.kt` — populated from real `welcome.sessions`; navigation list ↔ terminal; "New session" dialog (name + cwd); connection-state indicator
+- [x] `TerminalScreen.kt` — scrolling monospace `Text` fed by the output buffer, auto-scroll, input field + Send wired to `Input` frames (xterm.js deferred as polish)
+- [ ] In-app `PermissionCard` Composable — **deferred**: permissions currently surface via notifications (Day 4 path); an in-app card is optional polish
+
+Test: ⚠ Not yet run. Pending a device/emulator build pointed at a running daemon.
+
+## Day 4 — Notifications, mDNS, polish  🚧 daemon side done; Android client + pairing UI pending
 
 Goal: Receive permission requests as Android notifications even when the app is closed and the screen is off. Auto-discover the daemon.
 
 Tasks:
-- [ ] Verify `NotifBuilder.kt` posts notifications correctly; tweak importance + category if heads-up doesn't show
-- [ ] Test `PermissionActionReceiver.kt` end-to-end: lock phone, trigger permission, tap Allow on lock screen, verify decision reaches the daemon
-- [ ] Test voice reply: long-press notification, tap mic, say "allow", verify mapping
-- [ ] `claude_remote_daemon/discovery.py` — implement with `zeroconf.asyncio.AsyncZeroconf`; pick a sane local IP (iterate interfaces or bind to 0.0.0.0 and let zeroconf advertise all)
-- [ ] `DaemonBrowser.kt` — already implemented; verify it finds the daemon
-- [ ] `PairingScreen.kt` — wire pairing: POST to `http://<daemon>:<port>/pair` with the 6-digit code, store returned token in DataStore
-- [ ] Add a `/pair` HTTP endpoint to `server.py` (it can share the same port using `websockets`'s ability to handle HTTP)
-- [ ] `auth.py` is already complete; just hook `verify(token)` into `WsServer._handle`'s Hello check
+- [~] Verify `NotifBuilder.kt` posts notifications correctly; tweak importance + category if heads-up doesn't show — scaffold complete (channels, lock-screen actions, voice reply); **⚠ unverified** on a device. `SessionService` now drives it (permission/notification/task-complete + connection status).
+- [ ] Test `PermissionActionReceiver.kt` end-to-end: lock phone, trigger permission, tap Allow on lock screen, verify decision reaches the daemon — **⚠ unverified**
+- [ ] Test voice reply: long-press notification, tap mic, say "allow", verify mapping — **⚠ unverified**
+- [x] `claude_remote_daemon/discovery.py` — implemented with `zeroconf.asyncio.AsyncZeroconf`; resilient to multicast-socket failure (logs a warning and idles rather than crashing)
+- [ ] `DaemonBrowser.kt` — already implemented; verify it finds the daemon **⚠ unverified**
+- [ ] `PairingScreen.kt` — wire pairing: POST to `http://<daemon>:<port>/pair?code=NNNNNN&device=<name>`, store returned token in DataStore. **Note:** the daemon serves the code via the query string, not a JSON body (the websockets HTTP hook exposes no body).
+- [x] Added a `/pair` HTTP endpoint to `server.py` on the same port as the WebSocket (websockets asyncio `process_request` hook). Tested in `tests/test_pair.py`.
+- [x] `auth.py` `verify(token)` wired into `WsServer._handle`'s Hello check, behind a `--require-auth` flag (default off so dev works before the pairing UI lands; on → unknown tokens get an Error + close 4001)
 
 Test: Lock phone. From laptop, ask Claude to run a Bash command. Phone wakes with notification. Tap Allow on lock screen. See Claude proceed in the laptop terminal.
+
+## Cross-cutting work (added after the original plan)
+
+Items that emerged from the design discussion about a configurable Windows/Android remote control over WireGuard. See `CLAUDE.md` for the architecture.
+
+Configurable backend switch (`windows` | `android`, one active at a time):
+- [x] `install-hooks.sh` switches the permission/notification backend to the daemon (registers `PermissionRequest`/`Notification`/`Stop` → `claude-remote-hook`, replacing prior handlers)
+- [ ] A single `REMOTE_BACKEND` / `CLAUDE_NOTIFY_HOST` config knob read by the two existing shell hooks (`permission-approve-bridge.sh`, `notify-remote-bridge.sh`) so the Windows-toast path can be re-selected without hand-editing
+- [ ] A one-command toggle between the Windows and Android backends
+
+Hook isolation:
+- [x] Daemon-spawned sessions correlate via `CLAUDE_REMOTE_SESSION`; non-daemon `claude` sessions pass through untouched (no `--settings`/config-dir juggling needed)
+
+WireGuard transport:
+- [ ] Confirm phone ↔ daemon reachability over WireGuard (or a WireGuard-based mesh such as Tailscale); ensure one stable endpoint
+- [ ] App setting to point the daemon address at the WireGuard IP (ties into the DataStore work in Day 4)
+
+Schema / version:
+- [x] Hook input/output schema verified against Claude Code 2.1.185 (`PermissionRequest` + `Notification` events)
+
+App features added during live bring-up:
+- [x] Configurable daemon address in-app (host/port, SharedPreferences) + connection/error feedback (`Settings.kt`, `DaemonDialog`)
+- [x] VS Code-style project session browser: enter a folder → list past sessions (titles/timestamps) → resume or start new (`ProjectScreen`, `list_sessions`/`project_sessions`, `resume_id`)
+- [x] Build toolchain bootstrap script (`scripts/setup-android-toolchain.sh`) and Windows emulator runbook (`docs/EMULATOR_TESTING.md`)
+- [ ] **Readable terminal**: xterm.js renderer in the WebView so `claude`'s ANSI/TUI output is legible (currently raw escape codes)
 
 ## After the POC (v2 backlog)
 

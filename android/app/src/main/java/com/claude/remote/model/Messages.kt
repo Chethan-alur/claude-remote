@@ -23,7 +23,11 @@ data class Hello(val token: String) : Message
 
 @Serializable
 @SerialName("session_create")
-data class SessionCreate(val name: String, val cwd: String) : Message
+data class SessionCreate(
+    val name: String,
+    val cwd: String,
+    @SerialName("resume_id") val resumeId: String = "",
+) : Message
 
 @Serializable
 @SerialName("session_attach")
@@ -31,6 +35,10 @@ data class SessionAttach(
     val id: String,
     @SerialName("replay_bytes") val replayBytes: Int = 0,
 ) : Message
+
+@Serializable
+@SerialName("list_sessions")
+data class ListSessions(val cwd: String) : Message
 
 @Serializable
 @SerialName("input")
@@ -67,6 +75,21 @@ data class SessionCreated(
     val id: String,
     val name: String,
     val cwd: String,
+) : Message
+
+@Serializable
+data class ProjectSessionInfo(
+    val id: String,
+    val title: String,
+    val modified: Long,
+    val messages: Int,
+)
+
+@Serializable
+@SerialName("project_sessions")
+data class ProjectSessions(
+    val cwd: String,
+    val sessions: List<ProjectSessionInfo>,
 ) : Message
 
 @Serializable

@@ -65,6 +65,9 @@ class NotifBuilder(private val ctx: Context) {
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .build()
 
+    /** Re-post the ongoing status notification with new text. */
+    fun updateStatus(text: String) = mgr.notify(STATUS_NOTIF_ID, buildStatus(text))
+
     fun postPermissionRequest(req: PermissionRequest) {
         val notifId = req.id.hashCode()
         val n = NotificationCompat.Builder(ctx, CHAN_PERMISSIONS)

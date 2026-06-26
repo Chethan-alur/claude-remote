@@ -23,7 +23,14 @@ class Hello:
 class SessionCreate:
     name: str
     cwd: str
+    resume_id: str = ""  # when set, resume that past session (claude --resume)
     type: str = "session_create"
+
+
+@dataclass
+class ListSessions:
+    cwd: str
+    type: str = "list_sessions"
 
 
 @dataclass
@@ -71,6 +78,21 @@ class SessionCreated:
     name: str
     cwd: str
     type: str = "session_created"
+
+
+@dataclass
+class ProjectSessionInfo:
+    id: str
+    title: str
+    modified: int  # epoch seconds
+    messages: int
+
+
+@dataclass
+class ProjectSessions:
+    cwd: str
+    sessions: list[ProjectSessionInfo] = field(default_factory=list)
+    type: str = "project_sessions"
 
 
 @dataclass
@@ -134,10 +156,12 @@ _TYPE_REGISTRY = {
     "hello": Hello,
     "session_create": SessionCreate,
     "session_attach": SessionAttach,
+    "list_sessions": ListSessions,
     "input": Input,
     "permission_response": PermissionResponse,
     "welcome": Welcome,
     "session_created": SessionCreated,
+    "project_sessions": ProjectSessions,
     "output": Output,
     "permission_request": PermissionRequest,
     "notification": Notification,
@@ -164,7 +188,9 @@ def decode(raw: str) -> Any:
         raise ValueError(f"unknown message type: {t!r}")
     # Strip "type" before passing to constructor; it'll be set by the default.
     payload = {k: v for k, v in data.items() if k != "type"}
-    # SessionInfo nested list inside Welcome — special-case.
+    # Nested dataclass lists — special-case.
     if cls is Welcome and "sessions" in payload:
         payload["sessions"] = [SessionInfo(**s) for s in payload["sessions"]]
+    if cls is ProjectSessions and "sessions" in payload:
+        payload["sessions"] = [ProjectSessionInfo(**s) for s in payload["sessions"]]
     return cls(**payload)
