@@ -33,11 +33,29 @@ sudo ln -s "$(pwd)/.venv/bin/claude-remote-hook" /usr/local/bin/claude-remote-ho
 ../scripts/install-hooks.sh
 ```
 
-## Run as a systemd user service (optional)
+## Run as a systemd user service (recommended for a persistent daemon)
 
-See `systemd/claude-remote.service` (TODO: claude-code can generate this
-if you ask). The daemon should be run as your normal user, not root —
-it spawns Claude Code which uses your `~/.claude/` config.
+Running by hand is fine for development, but for a daemon that starts on boot,
+restarts on failure, and survives logout, install it as a **systemd user
+service**:
+
+```bash
+# From the repository root.
+./scripts/install-service.sh
+
+# Keep it running across logout / reboot (one time, needs sudo).
+sudo loginctl enable-linger "$USER"
+```
+
+This renders `systemd/claude-remote.service` (a template) into
+`~/.config/systemd/user/claude-remote.service` and starts it. Configuration —
+port, bind address, flags — lives in `~/.config/claude-remote/daemon.env`,
+seeded from `systemd/claude-remote.env.example`.
+
+The daemon runs as your normal user, never root, because it spawns Claude Code
+which uses your `~/.claude/` config. See **`docs/DEPLOYMENT.md`** for the full
+runbook: configuration keys, log/pairing-code retrieval, lingering, the WSL
+caveat, upgrading, and troubleshooting.
 
 ## Layout
 
@@ -52,6 +70,9 @@ daemon/
 │   ├── protocol.py             Wire-protocol dataclasses
 │   ├── discovery.py            mDNS advertise
 │   └── auth.py                 Pairing codes + device tokens
-└── hook_bin/                   Tiny CLI installed as claude-remote-hook
-    └── main.py
+├── hook_bin/                   Tiny CLI installed as claude-remote-hook
+│   └── main.py
+└── systemd/                    systemd user-service template + env example
+    ├── claude-remote.service
+    └── claude-remote.env.example
 ```

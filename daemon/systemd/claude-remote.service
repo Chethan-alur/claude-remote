@@ -1,0 +1,33 @@
+[Unit]
+# Template unit for the Claude Remote daemon, installed as a systemd *user*
+# service. The @...@ placeholder tokens below are substituted with absolute
+# paths by scripts/install-service.sh; do not run this file directly from the
+# repository.
+Description=Claude Remote daemon (bridges Claude Code to the Android app)
+Documentation=https://github.com/atxnetworks/claude-remote/blob/main/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Configuration lives in a separate environment file so the unit itself never
+# needs editing. PORT / BIND / EXTRA_ARGS are read from there. EXTRA_ARGS is
+# expanded *unquoted* on purpose so it can carry several flags, e.g.
+# "-v --require-auth".
+EnvironmentFile=@ENVFILE@
+ExecStart=@DAEMON_BIN@ --bind ${BIND} --port ${PORT} $EXTRA_ARGS
+WorkingDirectory=@WORKDIR@
+
+# Survive crashes, but back off so a tight crash-loop does not spin the CPU.
+Restart=on-failure
+RestartSec=3
+
+# On stop, send SIGTERM (the daemon installs a handler that drains in-flight
+# permission requests and shuts the PTYs down cleanly) and allow a short grace
+# period before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

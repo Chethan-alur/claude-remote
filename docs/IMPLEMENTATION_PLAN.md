@@ -109,7 +109,7 @@ Roughly in order of value:
 - [ ] Session output persistence (SQLite on the phone for history scrollback after disconnect)
 - [ ] Wear OS companion for permission approvals from the wrist
 - [ ] Settings: per-tool default decisions (e.g. always allow `Read`, always prompt for `Bash`)
-- [ ] systemd user service unit for the daemon (so it survives logout)
+- [x] systemd user service unit for the daemon (so it survives logout) — `daemon/systemd/`, `scripts/install-service.sh`, `docs/DEPLOYMENT.md`
 
 ## Anti-goals (do not build)
 
