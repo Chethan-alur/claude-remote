@@ -53,8 +53,16 @@ data class KillSession(val id: String) : Message
 data class CheckPath(val path: String) : Message
 
 @Serializable
+@SerialName("set_handoff")
+data class SetHandoff(val enabled: Boolean) : Message
+
+@Serializable
 @SerialName("input")
 data class Input(val session: String, val data: String) : Message
+
+@Serializable
+@SerialName("resize")
+data class Resize(val session: String, val cols: Int, val rows: Int) : Message
 
 @Serializable
 @SerialName("permission_response")
@@ -84,6 +92,7 @@ data class SessionInfo(
     val status: String,
     @SerialName("started_at") val startedAt: Long = 0,
     @SerialName("last_activity") val lastActivity: Long = 0,
+    val origin: String = "spawned", // spawned | adopted (external, e.g. VSCode)
 )
 
 @Serializable
@@ -92,7 +101,12 @@ data class Welcome(
     @SerialName("daemon_version") val daemonVersion: String,
     val hostname: String,
     val sessions: List<SessionInfo>,
+    @SerialName("handoff_enabled") val handoffEnabled: Boolean = false,
 ) : Message
+
+@Serializable
+@SerialName("handoff_state")
+data class HandoffState(val enabled: Boolean) : Message
 
 @Serializable
 @SerialName("sessions_update")

@@ -27,9 +27,11 @@ from .protocol import (
     Error,
     FileUpload,
     FileUploaded,
+    HandoffState,
     Hello,
     Input,
     KillSession,
+    Resize,
     ListSessions,
     Output,
     PathChecked,
@@ -43,6 +45,7 @@ from .protocol import (
     SessionCreated,
     SessionInfo,
     SessionsUpdate,
+    SetHandoff,
     Welcome,
     decode,
     encode,
@@ -106,6 +109,9 @@ class WsServer:
         # when a session is created / killed / dies.
         self._clients: set[ServerConnection] = set()
         self.sessions.on_change = self._on_sessions_changed
+        # Let the hook bridge fan permission/notification frames out to every
+        # connected client (adopted sessions have no attached subscriber).
+        self.hooks.broadcast_all = self._schedule_broadcast_all
 
     def _sessions_info(self) -> list[SessionInfo]:
         return [
@@ -116,6 +122,7 @@ class WsServer:
                 status=s.status.value,
                 started_at=int(s.created_at),
                 last_activity=int(s.last_active),
+                origin=s.origin,
             )
             for s in self.sessions.list()
         ]
@@ -127,6 +134,14 @@ class WsServer:
         except RuntimeError:
             return
         loop.create_task(self._broadcast_all(SessionsUpdate(sessions=self._sessions_info())))
+
+    def _schedule_broadcast_all(self, msg) -> None:
+        """Sync entry point for the hook bridge to fan a frame to all clients."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._broadcast_all(msg))
 
     async def _broadcast_all(self, msg) -> None:
         frame = encode(msg)
@@ -221,6 +236,7 @@ class WsServer:
                     daemon_version=__version__,
                     hostname=socket.gethostname(),
                     sessions=self._sessions_info(),
+                    handoff_enabled=self.hooks.handoff_enabled,
                 ),
             )
             self._clients.add(ws)
@@ -301,6 +317,15 @@ class WsServer:
                 return
             session.write(msg.data.encode())
 
+        elif isinstance(msg, Resize):
+            session = self.sessions.get(msg.session)
+            if session is None:
+                await self._send(
+                    ws, Error(code="session_not_found", message=msg.session)
+                )
+                return
+            session.setwinsize(msg.rows, msg.cols)
+
         elif isinstance(msg, FileUpload):
             session = self.sessions.get(msg.session)
             if session is None:
@@ -340,6 +365,12 @@ class WsServer:
 
         elif isinstance(msg, PermissionResponse):
             self.hooks.resolve(msg.id, msg.decision)
+
+        elif isinstance(msg, SetHandoff):
+            # Toggle desktop->mobile handoff and let every client's switch sync.
+            self.hooks.handoff_enabled = msg.enabled
+            logger.info("handoff %s", "enabled" if msg.enabled else "disabled")
+            await self._broadcast_all(HandoffState(enabled=msg.enabled))
 
         else:
             await self._send(

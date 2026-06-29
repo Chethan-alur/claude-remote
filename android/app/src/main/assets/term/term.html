@@ -2,32 +2,76 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <link rel="stylesheet" href="xterm.css">
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+    html, body { margin: 0; padding: 0; height: 100%; width: 100%; background: #000; overflow: hidden; }
     #term { height: 100%; width: 100%; }
     .xterm { padding: 4px; }
+    /* The terminal must never be wider than the screen; xterm is sized to fit. */
+    .xterm-viewport { overflow-x: hidden !important; }
   </style>
 </head>
 <body>
   <div id="term"></div>
   <script src="xterm.js"></script>
   <script>
-    // Dimensions match the daemon's PTY (rows=40, cols=120) so claude's TUI
-    // lays out correctly. The terminal is interactive: keystrokes (chars,
-    // backspace, Enter, arrows — xterm emits the right escape sequences) are
-    // forwarded to the daemon via the AndroidInput bridge and written to the PTY.
+    // The terminal grid is fitted to the WebView's width so a full line fits on
+    // screen without horizontal scrolling. We compute how many character cells
+    // fit, resize xterm to that grid, and report it to the native side, which
+    // tells the daemon to resize the PTY (SIGWINCH) so claude's TUI reflows to
+    // the same width. cols/rows here are therefore dynamic, not fixed.
     var term = new Terminal({
-      cols: 120,
-      rows: 40,
-      fontSize: 10,
+      fontSize: 12,
       scrollback: 5000,
       disableStdin: false,
       convertEol: false,
       theme: { background: '#000000' }
     });
-    term.open(document.getElementById('term'));
+    var el = document.getElementById('term');
+    term.open(el);
+
+    var lastCols = 0, lastRows = 0;
+
+    // Compute the cell grid that fits the container, mirroring xterm's FitAddon
+    // (which is not bundled here). Uses the renderer's measured cell size.
+    function proposeGeometry() {
+      try {
+        var core = term._core;
+        var dims = core && core._renderService && core._renderService.dimensions;
+        if (!dims || !dims.css || !dims.css.cell.width || !dims.css.cell.height) return null;
+        var style = window.getComputedStyle(term.element);
+        var padX = parseInt(style.paddingLeft || '0') + parseInt(style.paddingRight || '0');
+        var padY = parseInt(style.paddingTop || '0') + parseInt(style.paddingBottom || '0');
+        var availW = el.clientWidth - padX;
+        var availH = el.clientHeight - padY;
+        if (availW <= 0 || availH <= 0) return null;
+        return {
+          cols: Math.max(2, Math.floor(availW / dims.css.cell.width)),
+          rows: Math.max(1, Math.floor(availH / dims.css.cell.height))
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function fit() {
+      var g = proposeGeometry();
+      if (!g) return;
+      if (g.cols === lastCols && g.rows === lastRows) return;
+      lastCols = g.cols;
+      lastRows = g.rows;
+      term.resize(g.cols, g.rows);
+      if (window.AndroidInput && AndroidInput.resize) AndroidInput.resize(g.cols, g.rows);
+    }
+
+    // Refit whenever the WebView changes size (rotation, soft keyboard, the
+    // control-key row toggling). ResizeObserver covers all of these.
+    if (window.ResizeObserver) {
+      new ResizeObserver(function () { fit(); }).observe(el);
+    }
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', function () { setTimeout(fit, 100); });
 
     // Forward everything the user types (incl. control/escape sequences) to the
     // native side, which relays it over the WebSocket as an `input` frame.
@@ -37,14 +81,22 @@
 
     // Tapping the terminal focuses xterm's hidden textarea so the soft keyboard
     // opens and key events flow through onData.
-    document.getElementById('term').addEventListener('click', function () {
-      term.focus();
-    });
+    el.addEventListener('click', function () { term.focus(); });
 
     // Bridge API called from Android via evaluateJavascript:
     window.termWrite = function (s) { term.write(s); };
     window.termReset = function () { term.reset(); };
     window.termFocus = function () { term.focus(); };
+    window.termFit = function () { fit(); };
+    // Force a resize report even if the grid is unchanged — used when the same
+    // WebView is reused for a different session, whose new PTY still defaults to
+    // the daemon's spawn size and must be told this phone's dimensions.
+    window.termRefit = function () { lastCols = 0; lastRows = 0; fit(); };
+
+    // The renderer needs a tick to measure the cell size after open(); fit then,
+    // and once more shortly after in case web-font metrics settle late.
+    setTimeout(fit, 0);
+    setTimeout(fit, 250);
     window.__termReady = true;
   </script>
 </body>

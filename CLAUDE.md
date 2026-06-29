@@ -52,9 +52,15 @@ The wire protocol is defined in **three places that must be kept in lockstep**. 
 2. `daemon/claude_remote_daemon/protocol.py` — Python dataclasses + `encode`/`decode` (registry keyed on the `type` field).
 3. `android/app/src/main/java/com/claude/remote/model/Messages.kt` — Kotlin `@Serializable` sealed interface with `@JsonClassDiscriminator("type")`.
 
-Message types: `hello`, `welcome`, `session_create`, `session_created`, `session_attach`, `input`, `output`, `permission_request`, `permission_response`, `notification`, `ping`/`pong`, `error`. Pairing is **out of band** over HTTP (`POST /pair`), not part of the WebSocket protocol.
+Message types: `hello`, `welcome`, `session_create`, `session_created`, `session_attach`, `input`, `output`, `permission_request`, `permission_response`, `notification`, `set_handoff`, `handoff_state`, `ping`/`pong`, `error`. Pairing is **out of band** over HTTP (`POST /pair`), not part of the WebSocket protocol.
 
-Session status values: `running`, `waiting` (permission pending), `idle` (Claude finished its turn), `dead`. Permission decisions: `allow`, `deny`, `allow_always`, `deny_always` (the `*_always` variants store a per-session preference keyed on tool + input shape).
+Session status values: `running`, `waiting` (permission pending), `idle` (Claude finished its turn), `dead`. Permission decisions: `allow`, `deny`, `allow_always`, `deny_always` (the `*_always` variants store a per-session preference keyed on tool + input shape). `SessionInfo.origin` is `spawned` (daemon-launched) or `adopted` (external — see handoff below).
+
+## Desktop→mobile handoff (adopted sessions)
+
+A `claude` started outside the daemon (e.g. in VSCode) carries no `CLAUDE_REMOTE_SESSION`, so its hook events arrive with an empty session-id line. By default these pass through to the normal desktop prompt. When the phone enables handoff (`set_handoff` → `HookBridge.handoff_enabled`; default off, echoed via `welcome.handoff_enabled` + `handoff_state`), the daemon **adopts** such a session on its next hook event — keyed on Claude Code's own `session_id` from the payload — so its permission prompts reach the phone.
+
+Adopted sessions are **permission-only**: `Session.proc is None` (the daemon does not own their PTY), so there is no terminal output and input is a no-op; the Android terminal disables its input box and shows a "desktop" badge. Because no phone is *attached* to an adopted session, the hook bridge fans `permission_request`/`notification` frames out **daemon-wide** via `WsServer._broadcast_all` (wired to `HookBridge.broadcast_all`), not per-session `session.broadcast`. Lifecycle: adopted on any hook event (`SessionStart` makes them appear immediately), removed on `SessionEnd`, with `SessionManager.reap_adopted` pruning ones idle past `ADOPTED_TTL_SEC` as a safety net. This relies on `install-hooks.sh` registering `SessionStart`/`SessionEnd` (re-run it after updating).
 
 ## Daemon — commands
 

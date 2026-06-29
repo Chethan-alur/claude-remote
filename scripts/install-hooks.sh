@@ -47,6 +47,12 @@ HOOK_CONFIG=$(cat <<JSON
     }],
     "Stop": [{
       "hooks": [{"type": "command", "command": "${HOOK_BIN}"}]
+    }],
+    "SessionStart": [{
+      "hooks": [{"type": "command", "command": "${HOOK_BIN}"}]
+    }],
+    "SessionEnd": [{
+      "hooks": [{"type": "command", "command": "${HOOK_BIN}"}]
     }]
   }
 }
@@ -62,6 +68,7 @@ echo "Installed hooks pointing at: $HOOK_BIN"
 echo "Settings file: $SETTINGS"
 echo "Backup saved alongside with .bak.<timestamp> suffix."
 echo
-echo "Registered events: PermissionRequest, Notification, Stop."
-echo "Only sessions spawned by the daemon (CLAUDE_REMOTE_SESSION set) are"
-echo "routed to the phone; other claude sessions pass through untouched."
+echo "Registered events: PermissionRequest, Notification, Stop, SessionStart, SessionEnd."
+echo "Sessions spawned by the daemon (CLAUDE_REMOTE_SESSION set) are always routed"
+echo "to the phone. Other claude sessions (e.g. VSCode) pass through untouched unless"
+echo "desktop->mobile handoff is enabled from the app, which adopts and forwards them."

@@ -38,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -73,6 +74,8 @@ fun DaemonHomeScreen(
     sessions: List<SessionInfo>,
     connState: WsClient.ConnState,
     pathChecks: Map<String, Boolean>,
+    handoffEnabled: Boolean,
+    onSetHandoff: (Boolean) -> Unit,
     onOpenProject: (ProjectConfig) -> Unit,
     onNewSession: (ProjectConfig) -> Unit,
     onTogglePin: (ProjectConfig) -> Unit,
@@ -137,6 +140,14 @@ fun DaemonHomeScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item {
+                HandoffToggle(
+                    enabled = handoffEnabled,
+                    connected = connState == WsClient.ConnState.Connected,
+                    onToggle = onSetHandoff,
+                )
+            }
+
             item { Text("Projects", style = MaterialTheme.typography.titleSmall) }
             if (daemon.projects.isEmpty()) {
                 item {
@@ -214,6 +225,33 @@ fun DaemonHomeScreen(
             onSave = { onRenameSession(s.id, it); renaming = null },
             onDismiss = { renaming = null },
         )
+    }
+}
+
+/**
+ * Toggle for desktop->mobile handoff. While on, the daemon forwards permission
+ * prompts from sessions it did not spawn (e.g. VSCode) to this phone, surfacing
+ * them as "adopted" sessions. Disabled until connected.
+ */
+@Composable
+private fun HandoffToggle(enabled: Boolean, connected: Boolean, onToggle: (Boolean) -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 12.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Receive desktop permissions", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Forward Allow/Deny prompts from sessions started on the desktop " +
+                        "(e.g. VSCode) to this phone.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Switch(checked = enabled, onCheckedChange = onToggle, enabled = connected)
+        }
     }
 }
 
@@ -307,6 +345,10 @@ private fun SessionCard(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(session.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (session.origin == "adopted") {
+                    StatusChip(MaterialTheme.colorScheme.tertiary, "desktop")
+                    Spacer(Modifier.width(6.dp))
+                }
                 StatusChip(sessionStatusColor(session.status), session.status)
                 Box {
                     IconButton(onClick = { menu = true }) {

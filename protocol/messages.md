@@ -31,14 +31,17 @@ First frame after connection. If `token` is missing or unrecognized, daemon clos
   "type": "welcome",
   "daemon_version": "0.1.0",
   "hostname": "mac-studio",
+  "handoff_enabled": false,
   "sessions": [
-    { "id": "sess_8a3f", "name": "webapp-refactor", "cwd": "/home/josh/code/webapp", "status": "waiting" },
-    { "id": "sess_2c1d", "name": "api-server",      "cwd": "/home/josh/code/api",    "status": "running" }
+    { "id": "sess_8a3f", "name": "webapp-refactor", "cwd": "/home/josh/code/webapp", "status": "waiting", "origin": "spawned" },
+    { "id": "sess_2c1d", "name": "api-server",      "cwd": "/home/josh/code/api",    "status": "running", "origin": "spawned" }
   ]
 }
 ```
 
 Status values: `running`, `waiting` (permission pending), `idle` (Claude finished, awaiting next prompt), `dead` (process exited).
+
+`handoff_enabled` reports the current desktop→mobile handoff state (see `set_handoff`), so a reconnecting phone restores its toggle. `origin` is `spawned` (a session the daemon launched in a PTY) or `adopted` (an external session, e.g. one started in VSCode, whose permission prompts the daemon is forwarding — see `set_handoff`).
 
 ### session_create (phone → daemon)
 
@@ -111,6 +114,14 @@ Raw bytes from the PTY. Daemon should batch — one frame per ~16ms of output is
 ```
 
 Bytes to write to the PTY. Include trailing newline if you want the line submitted.
+
+### resize (phone → daemon)
+
+```json
+{ "type": "resize", "session": "sess_8a3f", "cols": 56, "rows": 38 }
+```
+
+Resizes the session's PTY to `cols` × `rows` character cells and sends SIGWINCH, so claude's TUI redraws to the client's width. The phone fits its terminal grid to the screen and reports the result, which is how a full line fits without horizontal scrolling. The daemon clamps to sane bounds (cols 2–500, rows 1–300) and ignores resizes for unknown or dead sessions.
 
 ### file_upload (phone → daemon)
 
@@ -226,7 +237,25 @@ Terminates the live session's PTY process. The daemon then pushes a `sessions_up
 
 The full live-session list, pushed whenever the set or a status changes (create, kill, or a session dying). The phone replaces its session list from this. Same `SessionInfo` shape as `welcome.sessions`.
 
-`SessionInfo` now also carries `started_at` and `last_activity` (epoch seconds) for showing uptime / last activity. Both default to `0` when unknown.
+`SessionInfo` now also carries `started_at` and `last_activity` (epoch seconds) for showing uptime / last activity. Both default to `0` when unknown. It also carries `origin` (`spawned` | `adopted`, default `spawned`) so the phone can badge adopted desktop sessions and disable their input.
+
+### set_handoff (phone → daemon)
+
+```json
+{ "type": "set_handoff", "enabled": true }
+```
+
+Toggles desktop→mobile handoff. While **enabled**, the daemon adopts `claude` sessions it did **not** spawn (e.g. one running in desktop VSCode) the next time they fire a hook, surfaces them in the session list with `origin: "adopted"`, and forwards their permission prompts and notifications to connected phones. While **disabled** (the default), such sessions are left alone and keep their normal in-editor prompt. The daemon broadcasts a `handoff_state` to every client when the flag changes.
+
+Adopted sessions are **permission-only**: the daemon does not own their PTY, so it cannot stream their terminal output or accept input for them.
+
+### handoff_state (daemon → phone)
+
+```json
+{ "type": "handoff_state", "enabled": true }
+```
+
+Broadcast to all connected clients whenever the handoff toggle changes (and reflected in `welcome.handoff_enabled` on connect), so every phone keeps its switch in sync.
 
 ### check_path (phone → daemon)
 

@@ -91,6 +91,8 @@ fun TerminalScreen(
     onAttachFile: () -> Unit,
     onBack: () -> Unit,
     onSendInput: (String) -> Unit,
+    onResize: (cols: Int, rows: Int) -> Unit,
+    adopted: Boolean = false,
 ) {
     var draft by remember { mutableStateOf("") }
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -115,6 +117,16 @@ fun TerminalScreen(
         uploadedPath?.let { p ->
             draft = if (draft.isBlank()) p else "$draft $p"
             onConsumeUploadedPath()
+        }
+    }
+
+    // Re-fit the terminal to the screen whenever the page becomes ready or a
+    // different session is opened in this (reused) WebView. termRefit forces a
+    // resize report so the new session's PTY is sized to this phone.
+    LaunchedEffect(sessionId, ready) {
+        val wv = webView
+        if (ready && wv != null) {
+            wv.evaluateJavascript("window.termRefit && window.termRefit();", null)
         }
     }
 
@@ -181,6 +193,12 @@ fun TerminalScreen(
                             object {
                                 @JavascriptInterface
                                 fun send(s: String) = onSendInput(s)
+
+                                // xterm fits itself to the WebView and reports the
+                                // resulting cell grid; we relay it so the daemon
+                                // resizes the PTY and claude reflows to match.
+                                @JavascriptInterface
+                                fun resize(cols: Int, rows: Int) = onResize(cols, rows)
                             },
                             "AndroidInput",
                         )
@@ -205,30 +223,43 @@ fun TerminalScreen(
                     },
                 )
             }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onAttachFile) {
-                    Icon(Icons.Filled.AttachFile, contentDescription = "Attach file")
-                }
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Send to Claude…") },
-                    textStyle = MaterialTheme.typography.bodyMedium,
+            if (adopted) {
+                // The daemon does not own this (e.g. VSCode) session's PTY, so
+                // there is no terminal to stream or input to send — it exists
+                // only to relay permission prompts to the phone.
+                Text(
+                    "Desktop session — permissions only. Its terminal and input " +
+                        "are unavailable; respond to permission prompts as they arrive.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                 )
-                IconButton(onClick = { submit() }, enabled = draft.isNotEmpty()) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (draft.isNotEmpty()) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onAttachFile) {
+                        Icon(Icons.Filled.AttachFile, contentDescription = "Attach file")
+                    }
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Send to Claude…") },
+                        textStyle = MaterialTheme.typography.bodyMedium,
                     )
+                    IconButton(onClick = { submit() }, enabled = draft.isNotEmpty()) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (draft.isNotEmpty()) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                 }
             }
         }

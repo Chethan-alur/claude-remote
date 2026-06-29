@@ -128,6 +128,7 @@ private fun AppRoot(service: SessionService) {
     val connections by service.connections.collectAsState()
     val uploadedPath by service.uploadedPath.collectAsState()
     val pathChecks by service.pathChecks.collectAsState()
+    val handoffEnabled by service.handoffEnabled.collectAsState()
 
     // Surface daemon errors (e.g. bad cwd, session_creation_failed) as a toast.
     val ctx = LocalContext.current
@@ -173,6 +174,7 @@ private fun AppRoot(service: SessionService) {
             // Subscribe to the session's output stream once when it is opened.
             LaunchedEffect(open) { service.attach(open) }
             BackHandler { openId = null }
+            val openAdopted = sessions.firstOrNull { it.id == open }?.origin == "adopted"
             TerminalScreen(
                 sessionId = open,
                 output = output,
@@ -182,6 +184,8 @@ private fun AppRoot(service: SessionService) {
                 onAttachFile = { picker.launch(arrayOf("*/*")) },
                 onBack = { openId = null },
                 onSendInput = { service.sendInput(open, it) },
+                onResize = { cols, rows -> service.resizePty(open, cols, rows) },
+                adopted = openAdopted,
             )
         }
 
@@ -223,6 +227,8 @@ private fun AppRoot(service: SessionService) {
                 sessions = sessions,
                 connState = connState,
                 pathChecks = pathChecks,
+                handoffEnabled = handoffEnabled,
+                onSetHandoff = { service.setHandoff(it) },
                 onOpenProject = { browseCwd = it.path },
                 onNewSession = { service.createSession(it.name, it.path) },
                 onTogglePin = { service.saveProject(daemon.id, it.copy(pinned = !it.pinned)) },

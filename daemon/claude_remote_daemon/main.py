@@ -85,6 +85,7 @@ async def run(args: argparse.Namespace) -> None:
         asyncio.create_task(hooks.serve(), name="hooks"),
         asyncio.create_task(server.serve(), name="server"),
         asyncio.create_task(discovery.advertise(), name="discovery"),
+        asyncio.create_task(sessions.reap_adopted(), name="reaper"),
     ]
     try:
         done, pending = await asyncio.wait(

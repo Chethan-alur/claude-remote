@@ -33,7 +33,7 @@ import logging
 import os
 import uuid
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .protocol import Notification, PermissionRequest, encode
 from .session import Status
@@ -55,6 +55,15 @@ class HookBridge:
     def __init__(self, socket_path: str, sessions: "SessionManager") -> None:
         self.socket_path = socket_path
         self.sessions = sessions
+        # Desktop->mobile handoff. When True, hooks from a claude we did NOT
+        # spawn (empty CLAUDE_REMOTE_SESSION) are adopted and forwarded to
+        # phones; when False they pass through to the normal desktop prompt.
+        self.handoff_enabled = False
+        # Set by the server to fan a control frame (PermissionRequest /
+        # Notification dataclass) out to every connected client. Adopted
+        # sessions have no attached subscriber, so per-session broadcast would
+        # never reach the phone — these frames must go daemon-wide.
+        self.broadcast_all: Callable[[object], None] | None = None
 
     async def serve(self) -> None:
         """Listen forever for hook-bin connections."""
@@ -102,6 +111,22 @@ class HookBridge:
     ) -> dict[str, Any]:
         session = self.sessions.get(session_id) if session_id else None
 
+        # Desktop->mobile handoff: a claude we did not spawn (empty env
+        # session-id line) carries its own session_id in the hook payload. When
+        # handoff is on, adopt it so its permissions reach the phone.
+        if session is None and not session_id and self.handoff_enabled:
+            cc_id = str(payload.get("session_id") or "")
+            if cc_id:
+                if event == "SessionEnd":
+                    adopted = self.sessions.adopted_session(cc_id)
+                    if adopted is not None:
+                        self.sessions.remove(adopted.id)
+                    return {}
+                session = self.sessions.adopt(cc_id, str(payload.get("cwd") or ""))
+
+        if session is not None and session.origin == "adopted":
+            session.last_active = time()
+
         if event in PERMISSION_EVENTS:
             if session is None:
                 return self._passthrough(event)
@@ -113,18 +138,19 @@ class HookBridge:
 
         if event == "Stop" and session is not None:
             session.status = Status.IDLE
-            session.broadcast(
-                encode(
-                    Notification(
-                        session=session.id,
-                        kind="task_complete",
-                        message="Claude finished its turn",
-                        ts=int(time()),
-                    )
-                )
+            self._broadcast(
+                session,
+                Notification(
+                    session=session.id,
+                    kind="task_complete",
+                    message="Claude finished its turn",
+                    ts=int(time()),
+                ),
             )
             return {}
 
+        # SessionStart (and anything else) needs no decision; adoption above
+        # has already surfaced the session to phones.
         return self._passthrough(event)
 
     async def _handle_permission(
@@ -144,31 +170,29 @@ class HookBridge:
         fut: asyncio.Future = loop.create_future()
         session.pending_perms[req_id] = fut
         session.status = Status.WAITING
-        session.broadcast(
-            encode(
-                PermissionRequest(
-                    id=req_id,
-                    session=session.id,
-                    tool=tool,
-                    input=tool_input,
-                    summary=self._summarize(tool, tool_input),
-                    received_at=int(time()),
-                )
-            )
+        self._broadcast(
+            session,
+            PermissionRequest(
+                id=req_id,
+                session=session.id,
+                tool=tool,
+                input=tool_input,
+                summary=self._summarize(tool, tool_input),
+                received_at=int(time()),
+            ),
         )
 
         try:
             decision = await asyncio.wait_for(fut, timeout=PERMISSION_TIMEOUT_SEC)
         except asyncio.TimeoutError:
-            session.broadcast(
-                encode(
-                    Notification(
-                        session=session.id,
-                        kind="permission_timeout",
-                        message=f"Auto-denied {tool} after 5 min with no response",
-                        ts=int(time()),
-                    )
-                )
+            self._broadcast(
+                session,
+                Notification(
+                    session=session.id,
+                    kind="permission_timeout",
+                    message=f"Auto-denied {tool} after 5 min with no response",
+                    ts=int(time()),
+                ),
             )
             return self._decision_response(event, "deny")
         except asyncio.CancelledError:
@@ -200,18 +224,29 @@ class HookBridge:
 
     # --- helpers ---
 
+    def _broadcast(self, session: "Session", msg: object) -> None:
+        """Fan a control frame (permission / notification) out to phones.
+
+        Routes daemon-wide when a broadcaster is wired (so adopted sessions,
+        which have no attached subscriber, still reach the phone; the Android
+        client keys notifications by id, so this is duplicate-free for spawned
+        sessions too). Falls back to per-session fan-out otherwise (tests)."""
+        if self.broadcast_all is not None:
+            self.broadcast_all(msg)
+        else:
+            session.broadcast(encode(msg))
+
     def _emit_notification(self, session: "Session", payload: dict[str, Any]) -> None:
         # permission_prompt is handled by the PermissionRequest event; skip it
         # here so the phone does not get a duplicate, button-less notification.
         if payload.get("notification_type") == "permission_prompt":
             return
         message = payload.get("message") or "Claude Code needs your attention"
-        session.broadcast(
-            encode(
-                Notification(
-                    session=session.id, kind="info", message=message, ts=int(time())
-                )
-            )
+        self._broadcast(
+            session,
+            Notification(
+                session=session.id, kind="info", message=message, ts=int(time())
+            ),
         )
 
     def _decision_response(self, event: str, behavior: str) -> dict[str, Any]:

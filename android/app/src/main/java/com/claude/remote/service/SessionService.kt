@@ -16,6 +16,7 @@ import com.claude.remote.model.FileUpload
 import com.claude.remote.model.FileUploaded
 import com.claude.remote.model.Input
 import com.claude.remote.model.DeleteSession
+import com.claude.remote.model.HandoffState
 import com.claude.remote.model.KillSession
 import com.claude.remote.model.ListSessions
 import com.claude.remote.model.Message
@@ -25,11 +26,13 @@ import com.claude.remote.model.PermissionRequest
 import com.claude.remote.model.PermissionResponse
 import com.claude.remote.model.ProjectSessionInfo
 import com.claude.remote.model.ProjectSessions
+import com.claude.remote.model.Resize
 import com.claude.remote.model.SessionAttach
 import com.claude.remote.model.SessionCreate
 import com.claude.remote.model.SessionCreated
 import com.claude.remote.model.SessionInfo
 import com.claude.remote.model.SessionsUpdate
+import com.claude.remote.model.SetHandoff
 import com.claude.remote.model.Welcome
 import com.claude.remote.net.WsClient
 import com.claude.remote.notif.NotifBuilder
@@ -91,6 +94,10 @@ class SessionService : Service() {
     // Connection state, mirrored from the active WsClient.
     private val _conn = MutableStateFlow(WsClient.ConnState.Disconnected)
     val conn: StateFlow<WsClient.ConnState> = _conn.asStateFlow()
+
+    // Desktop->mobile handoff state, sourced from `welcome` and `handoff_state`.
+    private val _handoffEnabled = MutableStateFlow(false)
+    val handoffEnabled: StateFlow<Boolean> = _handoffEnabled.asStateFlow()
 
     // Per-session accumulated terminal output. Keyed by session id.
     // ConcurrentHashMap because the IO collector writes while the UI thread reads.
@@ -269,7 +276,12 @@ class SessionService : Service() {
         _messages.tryEmit(msg)
 
         when (msg) {
-            is Welcome -> _sessions.value = applyNames(msg.sessions)
+            is Welcome -> {
+                _sessions.value = applyNames(msg.sessions)
+                _handoffEnabled.value = msg.handoffEnabled
+            }
+
+            is HandoffState -> _handoffEnabled.value = msg.enabled
 
             is SessionsUpdate -> _sessions.value = applyNames(msg.sessions)
 
@@ -349,6 +361,10 @@ class SessionService : Service() {
 
     fun sendInput(sessionId: String, data: String) = client?.send(Input(sessionId, data))
 
+    /** Tell the daemon to resize the PTY so claude reflows to the phone's width. */
+    fun resizePty(sessionId: String, cols: Int, rows: Int) =
+        client?.send(Resize(sessionId, cols, rows))
+
     /** Terminate a live session on the daemon (daemon pushes a sessions_update). */
     fun killSession(id: String) = client?.send(KillSession(id))
 
@@ -359,6 +375,13 @@ class SessionService : Service() {
 
     /** Ask the daemon whether a folder exists on the host; result lands in [pathChecks]. */
     fun checkPath(path: String) = client?.send(CheckPath(path))
+
+    /**
+     * Toggle desktop->mobile handoff. When enabled, the daemon forwards
+     * permission prompts from sessions it did not spawn (e.g. VSCode) to this
+     * phone. The daemon echoes a `handoff_state`, which updates [handoffEnabled].
+     */
+    fun setHandoff(enabled: Boolean) = client?.send(SetHandoff(enabled))
 
     /** Set (or clear, when blank) a session's local display name. */
     fun renameSession(id: String, name: String) {

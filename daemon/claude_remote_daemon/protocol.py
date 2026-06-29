@@ -55,6 +55,14 @@ class Input:
 
 
 @dataclass
+class Resize:
+    session: str
+    cols: int
+    rows: int
+    type: str = "resize"
+
+
+@dataclass
 class PermissionResponse:
     id: str
     decision: str  # allow | deny | allow_always | deny_always
@@ -84,6 +92,12 @@ class CheckPath:
     type: str = "check_path"
 
 
+@dataclass
+class SetHandoff:
+    enabled: bool  # forward non-daemon (e.g. VSCode) session permissions to phones
+    type: str = "set_handoff"
+
+
 # --- daemon -> phone ------------------------------------------------------
 
 @dataclass
@@ -94,6 +108,7 @@ class SessionInfo:
     status: str  # running | waiting | idle | dead
     started_at: int = 0     # epoch seconds the session was created
     last_activity: int = 0  # epoch seconds of the last output/input
+    origin: str = "spawned"  # spawned (daemon-launched) | adopted (external, e.g. VSCode)
 
 
 @dataclass
@@ -115,7 +130,15 @@ class Welcome:
     daemon_version: str
     hostname: str
     sessions: list[SessionInfo] = field(default_factory=list)
+    handoff_enabled: bool = False  # current desktop->mobile handoff state
     type: str = "welcome"
+
+
+@dataclass
+class HandoffState:
+    """Broadcast whenever the handoff toggle changes, so all phones stay in sync."""
+    enabled: bool
+    type: str = "handoff_state"
 
 
 @dataclass
@@ -214,10 +237,13 @@ _TYPE_REGISTRY = {
     "delete_session": DeleteSession,
     "kill_session": KillSession,
     "check_path": CheckPath,
+    "set_handoff": SetHandoff,
     "input": Input,
+    "resize": Resize,
     "permission_response": PermissionResponse,
     "file_upload": FileUpload,
     "welcome": Welcome,
+    "handoff_state": HandoffState,
     "sessions_update": SessionsUpdate,
     "path_checked": PathChecked,
     "session_created": SessionCreated,

@@ -49,6 +49,11 @@ READ_CHUNK = 65536
 # Per-subscriber queue depth before we start dropping (slow consumer).
 SUBSCRIBER_QUEUE_MAX = 512
 
+# Adopted (external) sessions have no process to watchdog, so we prune them
+# after this long with no hook activity, in case a SessionEnd never arrives.
+ADOPTED_TTL_SEC = 1800  # 30 minutes
+ADOPTED_REAP_INTERVAL_SEC = 60
+
 
 @dataclass
 class Session:
@@ -58,6 +63,11 @@ class Session:
     status: Status = Status.RUNNING
     created_at: float = field(default_factory=time)
     last_active: float = field(default_factory=time)
+
+    # "spawned" — the daemon launched this in a PTY (full control).
+    # "adopted" — an external session (e.g. VSCode) we only forward permissions
+    # for; it has no PTY, so output/input are unavailable.
+    origin: str = "spawned"
 
     # Set by SessionManager.create()
     proc: Optional[ptyprocess.PtyProcess] = None
@@ -95,6 +105,23 @@ class Session:
             logger.warning("write to session %s failed: %s", self.id, exc)
             return
         self.last_active = time()
+
+    def setwinsize(self, rows: int, cols: int) -> None:
+        """Resize the PTY so claude's TUI redraws to the client's dimensions.
+
+        The phone reports how many character cells fit its screen; matching the
+        PTY width means claude wraps at the same column the phone displays, so
+        lines fit without horizontal scrolling. Sends SIGWINCH to claude.
+        """
+        if self.proc is None or not self.proc.isalive():
+            return
+        # Guard against absurd values from a mis-measuring client.
+        rows = max(1, min(rows, 300))
+        cols = max(2, min(cols, 500))
+        try:
+            self.proc.setwinsize(rows, cols)
+        except (OSError, ptyprocess.PtyProcessError) as exc:
+            logger.warning("resize of session %s failed: %s", self.id, exc)
 
     def broadcast(self, frame: str) -> None:
         """Fan a ready-to-send protocol frame out to every subscriber."""
@@ -156,6 +183,9 @@ class SessionManager:
         claude_cmd: list[str] | None = None,
     ) -> None:
         self._sessions: dict[str, Session] = {}
+        # Claude Code's own session_id -> our daemon session id, for sessions we
+        # did not spawn but adopted from a hook event (e.g. a VSCode session).
+        self._adopted: dict[str, str] = {}
         self._hook_socket = hook_socket
         # The command spawned for each session. Overridable for testing
         # without the real `claude` binary.
@@ -227,6 +257,65 @@ class SessionManager:
         self._fire_change()
         return session
 
+    def adopt(self, cc_session_id: str, cwd: str) -> Session:
+        """Register a PTY-less session for a claude we did not spawn.
+
+        Used when desktop->mobile handoff is enabled and a hook fires for an
+        external (e.g. VSCode) session. Keyed on Claude Code's own session_id
+        (from the hook payload) so repeated hooks reuse the same record. The
+        session carries no process, so output/input are unavailable — it exists
+        only to surface permission prompts on the phone.
+        """
+        existing_id = self._adopted.get(cc_session_id)
+        if existing_id is not None:
+            existing = self._sessions.get(existing_id)
+            if existing is not None:
+                return existing
+            # Mapping went stale (session removed) — fall through and re-adopt.
+
+        session_id = "sess_" + uuid.uuid4().hex[:8]
+        path = Path(cwd) if cwd else Path.home()
+        name = path.name or "desktop"
+        session = Session(
+            id=session_id,
+            name=name,
+            cwd=path,
+            origin="adopted",
+            proc=None,
+        )
+        self._sessions[session_id] = session
+        self._adopted[cc_session_id] = session_id
+        logger.info("adopted external session %s (cc=%s) in %s", session_id, cc_session_id, path)
+        self._fire_change()
+        return session
+
+    def prune_stale_adopted(self) -> int:
+        """Remove adopted sessions idle past ADOPTED_TTL_SEC. Returns the count."""
+        now = time()
+        stale = [
+            s.id
+            for s in list(self._sessions.values())
+            if s.origin == "adopted" and now - s.last_active > ADOPTED_TTL_SEC
+        ]
+        for sid in stale:
+            logger.info("reaping stale adopted session %s", sid)
+            self.remove(sid)
+        return len(stale)
+
+    async def reap_adopted(self) -> None:
+        """Background task: periodically prune stale adopted sessions.
+
+        A safety net for the case where a SessionEnd hook never arrives (e.g.
+        the desktop editor was killed). Spawned sessions are untouched — they
+        have a watchdog. Runs until cancelled.
+        """
+        try:
+            while True:
+                await asyncio.sleep(ADOPTED_REAP_INTERVAL_SEC)
+                self.prune_stale_adopted()
+        except asyncio.CancelledError:
+            return
+
     async def _watch(self, session: Session, loop: asyncio.AbstractEventLoop) -> None:
         """Poll for process exit and finalize cleanly."""
         proc = session.proc
@@ -271,12 +360,21 @@ class SessionManager:
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
+    def adopted_session(self, cc_session_id: str) -> Session | None:
+        """The adopted session for a Claude Code session_id, if one exists."""
+        sid = self._adopted.get(cc_session_id)
+        return self._sessions.get(sid) if sid else None
+
     def list(self) -> list[Session]:
         return list(self._sessions.values())
 
     def remove(self, session_id: str) -> None:
         s = self._sessions.pop(session_id, None)
         if s is not None:
+            # Drop any adopted-session mapping pointing at this id.
+            for cc_id, sid in list(self._adopted.items()):
+                if sid == session_id:
+                    del self._adopted[cc_id]
             s.close()
             self._fire_change()
 

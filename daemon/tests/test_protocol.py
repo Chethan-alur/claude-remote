@@ -13,6 +13,7 @@ from claude_remote_daemon.protocol import (
     Error,
     FileUpload,
     FileUploaded,
+    HandoffState,
     Hello,
     Input,
     KillSession,
@@ -31,6 +32,7 @@ from claude_remote_daemon.protocol import (
     SessionCreated,
     SessionInfo,
     SessionsUpdate,
+    SetHandoff,
     Welcome,
     decode,
     encode,
@@ -85,8 +87,19 @@ MESSAGES = [
             SessionInfo(
                 id="sess_1", name="webapp", cwd="/x", status="running",
                 started_at=1751200000, last_activity=1751200500,
-            )
+            ),
+            SessionInfo(
+                id="sess_2", name="proj", cwd="/p", status="waiting", origin="adopted",
+            ),
         ],
+    ),
+    SetHandoff(enabled=True),
+    HandoffState(enabled=False),
+    Welcome(
+        daemon_version="0.1.0",
+        hostname="dev-box",
+        sessions=[],
+        handoff_enabled=True,
     ),
 ]
 

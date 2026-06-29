@@ -160,3 +160,97 @@ async def test_permission_prompt_notification_is_skipped():
         bridge._handle(_reader(_frame("sess_test", payload)), writer), 2
     )
     assert q.empty()  # suppressed in favour of the PermissionRequest event
+
+
+# --- desktop->mobile handoff (adopting external sessions) ---
+
+EXTERNAL_PERM = {
+    "hook_event_name": "PermissionRequest",
+    "session_id": "cc-abc",   # Claude Code's own id (no CLAUDE_REMOTE_SESSION)
+    "cwd": "/tmp/proj",
+    "tool_name": "Bash",
+    "tool_input": {"command": "rm -rf build"},
+}
+
+
+def _bridge_handoff():
+    """A bridge with handoff on and a daemon-wide broadcast captured to a queue."""
+    sessions = SessionManager()
+    bridge = HookBridge("/unused.sock", sessions)
+    bridge.handoff_enabled = True
+    q: asyncio.Queue = asyncio.Queue(maxsize=16)
+    bridge.broadcast_all = lambda msg: q.put_nowait(msg)
+    return bridge, sessions, q
+
+
+async def test_handoff_adopts_and_forwards_permission():
+    bridge, sessions, q = _bridge_handoff()
+    writer = FakeWriter()
+    # Empty env session-id line -> external session; payload carries cc id + cwd.
+    task = asyncio.create_task(
+        bridge._handle(_reader(_frame("", EXTERNAL_PERM)), writer)
+    )
+
+    # The prompt is fanned out daemon-wide (no phone is attached to it).
+    frame = await asyncio.wait_for(q.get(), 2)
+    assert isinstance(frame, PermissionRequest)
+    assert "rm -rf build" in frame.summary
+
+    # The session was adopted and is visible in the registry.
+    assert len(sessions.list()) == 1
+    s = sessions.list()[0]
+    assert s.origin == "adopted"
+    assert s.name == "proj"
+
+    bridge.resolve(frame.id, "allow")
+    await asyncio.wait_for(task, 2)
+    assert writer.response()["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+
+
+async def test_handoff_off_leaves_external_session_alone():
+    sessions = SessionManager()
+    bridge = HookBridge("/unused.sock", sessions)  # handoff defaults off
+    writer = FakeWriter()
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("", EXTERNAL_PERM)), writer), 2
+    )
+    assert writer.response() == {"continue": True}  # normal desktop prompt
+    assert sessions.list() == []  # nothing adopted
+
+
+async def test_adopt_reuses_session_for_same_cc_id():
+    bridge, sessions, _q = _bridge_handoff()
+    start = {"hook_event_name": "SessionStart", "session_id": "cc-xyz", "cwd": "/tmp/proj"}
+    await asyncio.wait_for(bridge._handle(_reader(_frame("", start)), FakeWriter()), 2)
+    await asyncio.wait_for(bridge._handle(_reader(_frame("", start)), FakeWriter()), 2)
+    assert len(sessions.list()) == 1  # second event reuses the same record
+
+
+async def test_session_end_removes_adopted():
+    bridge, sessions, _q = _bridge_handoff()
+    start = {"hook_event_name": "SessionStart", "session_id": "cc-1", "cwd": "/tmp/proj"}
+    await asyncio.wait_for(bridge._handle(_reader(_frame("", start)), FakeWriter()), 2)
+    assert len(sessions.list()) == 1
+
+    end = {"hook_event_name": "SessionEnd", "session_id": "cc-1", "cwd": "/tmp/proj", "reason": "other"}
+    writer = FakeWriter()
+    await asyncio.wait_for(bridge._handle(_reader(_frame("", end)), writer), 2)
+    assert sessions.list() == []
+    assert writer.response() == {}  # SessionEnd is observability-only
+
+
+async def test_reaper_prunes_stale_adopted_only():
+    from claude_remote_daemon.session import ADOPTED_TTL_SEC
+
+    sessions = SessionManager()
+    adopted = sessions.adopt("cc-stale", "/tmp/proj")
+    spawned = Session(id="sess_live", name="live", cwd=Path("/tmp"))  # origin "spawned"
+    sessions._sessions[spawned.id] = spawned
+
+    # Age the adopted session past its TTL; the spawned one is untouched.
+    adopted.last_active = adopted.last_active - ADOPTED_TTL_SEC - 1
+    spawned.last_active = spawned.last_active - ADOPTED_TTL_SEC - 1
+
+    assert sessions.prune_stale_adopted() == 1
+    ids = [s.id for s in sessions.list()]
+    assert "sess_live" in ids and adopted.id not in ids
