@@ -22,14 +22,17 @@ from websockets.asyncio.server import ServerConnection
 from . import __version__
 from .history import delete_project_session, list_project_sessions
 from .protocol import (
+    CheckPath,
     DeleteSession,
     Error,
     FileUpload,
     FileUploaded,
     Hello,
     Input,
+    KillSession,
     ListSessions,
     Output,
+    PathChecked,
     PermissionResponse,
     Ping,
     Pong,
@@ -39,6 +42,7 @@ from .protocol import (
     SessionCreate,
     SessionCreated,
     SessionInfo,
+    SessionsUpdate,
     Welcome,
     decode,
     encode,
@@ -98,6 +102,39 @@ class WsServer:
         # When False (POC default), unknown tokens are accepted with a warning
         # so development works before the pairing UI is wired. Flip to enforce.
         self.require_auth = require_auth
+        # All currently-connected clients, for pushing SessionsUpdate to everyone
+        # when a session is created / killed / dies.
+        self._clients: set[ServerConnection] = set()
+        self.sessions.on_change = self._on_sessions_changed
+
+    def _sessions_info(self) -> list[SessionInfo]:
+        return [
+            SessionInfo(
+                id=s.id,
+                name=s.name,
+                cwd=str(s.cwd),
+                status=s.status.value,
+                started_at=int(s.created_at),
+                last_activity=int(s.last_active),
+            )
+            for s in self.sessions.list()
+        ]
+
+    def _on_sessions_changed(self) -> None:
+        """SessionManager hook — schedule a SessionsUpdate to all clients."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._broadcast_all(SessionsUpdate(sessions=self._sessions_info())))
+
+    async def _broadcast_all(self, msg) -> None:
+        frame = encode(msg)
+        for ws in list(self._clients):
+            try:
+                await ws.send(frame)
+            except Exception:
+                pass  # best-effort; the client's own handler cleans up
 
     async def serve(self) -> None:
         async with websockets.serve(
@@ -178,18 +215,15 @@ class WsServer:
                 )
 
             # 2. Welcome
-            sessions_info = [
-                SessionInfo(id=s.id, name=s.name, cwd=str(s.cwd), status=s.status.value)
-                for s in self.sessions.list()
-            ]
             await self._send(
                 ws,
                 Welcome(
                     daemon_version=__version__,
                     hostname=socket.gethostname(),
-                    sessions=sessions_info,
+                    sessions=self._sessions_info(),
                 ),
             )
+            self._clients.add(ws)
 
             # 3. Main loop
             attached_tasks: list[asyncio.Task] = []
@@ -202,6 +236,7 @@ class WsServer:
                         continue
                     await self._dispatch(ws, msg, attached_tasks)
             finally:
+                self._clients.discard(ws)
                 for t in attached_tasks:
                     t.cancel()
         except websockets.ConnectionClosed:
@@ -293,6 +328,15 @@ class WsServer:
                         session=session.id, upload_id=msg.upload_id, path=str(dest)
                     ),
                 )
+
+        elif isinstance(msg, KillSession):
+            # Terminate the live PTY. SessionManager.on_change then pushes a
+            # SessionsUpdate to every client so lists stay in sync.
+            self.sessions.remove(msg.id)
+
+        elif isinstance(msg, CheckPath):
+            p = Path(msg.path).expanduser()
+            await self._send(ws, PathChecked(path=msg.path, is_dir=p.is_dir()))
 
         elif isinstance(msg, PermissionResponse):
             self.hooks.resolve(msg.id, msg.decision)

@@ -205,6 +205,45 @@ Error codes:
 - `upload_failed` — a `file_upload` could not be written (bad path, I/O error)
 - `internal` — daemon bug
 
+### kill_session (phone → daemon)
+
+```json
+{ "type": "kill_session", "id": "sess_8a3f" }
+```
+
+Terminates the live session's PTY process. The daemon then pushes a `sessions_update` to every connected client. Unknown ids are ignored. (Distinct from `delete_session`, which only removes an on-disk transcript.)
+
+### sessions_update (daemon → phone)
+
+```json
+{
+  "type": "sessions_update",
+  "sessions": [
+    { "id": "sess_8a3f", "name": "webapp", "cwd": "/home/josh/code/webapp", "status": "running", "started_at": 1751200000, "last_activity": 1751200500 }
+  ]
+}
+```
+
+The full live-session list, pushed whenever the set or a status changes (create, kill, or a session dying). The phone replaces its session list from this. Same `SessionInfo` shape as `welcome.sessions`.
+
+`SessionInfo` now also carries `started_at` and `last_activity` (epoch seconds) for showing uptime / last activity. Both default to `0` when unknown.
+
+### check_path (phone → daemon)
+
+```json
+{ "type": "check_path", "path": "/home/josh/code/webapp" }
+```
+
+Asks the daemon whether a folder exists on the host. Daemon replies with `path_checked`.
+
+### path_checked (daemon → phone)
+
+```json
+{ "type": "path_checked", "path": "/home/josh/code/webapp", "is_dir": true }
+```
+
+`is_dir` is true only if the path resolves to an existing directory on the daemon host.
+
 ## Pairing (out of band)
 
 Pairing is not part of the WS protocol — it happens once over a separate HTTP endpoint.

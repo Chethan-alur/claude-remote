@@ -15,6 +15,7 @@ data class ProjectConfig(
     val id: String,
     val name: String,
     val path: String,
+    val pinned: Boolean = false,
 )
 
 /**
@@ -36,6 +37,8 @@ data class DaemonConfig(
 data class ConnectionsState(
     val daemons: List<DaemonConfig> = emptyList(),
     val activeDaemonId: String? = null,
+    // App-side display-name overrides for live sessions, keyed by session id.
+    val sessionNames: Map<String, String> = emptyMap(),
     val schemaVersion: Int = 1,
 )
 
@@ -84,6 +87,14 @@ class ConnectionsStore(ctx: Context) {
     }
 
     fun setActive(id: String?): ConnectionsState = save(load().copy(activeDaemonId = id))
+
+    /** Set or clear (blank) a session's display-name override. */
+    fun setSessionName(sessionId: String, name: String): ConnectionsState {
+        val s = load()
+        val names = s.sessionNames.toMutableMap()
+        if (name.isBlank()) names.remove(sessionId) else names[sessionId] = name.trim()
+        return save(s.copy(sessionNames = names))
+    }
 
     // --- project CRUD (nested under a daemon) ---
 

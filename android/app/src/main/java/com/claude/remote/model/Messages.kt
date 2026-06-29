@@ -45,6 +45,14 @@ data class ListSessions(val cwd: String) : Message
 data class DeleteSession(val cwd: String, val id: String) : Message
 
 @Serializable
+@SerialName("kill_session")
+data class KillSession(val id: String) : Message
+
+@Serializable
+@SerialName("check_path")
+data class CheckPath(val path: String) : Message
+
+@Serializable
 @SerialName("input")
 data class Input(val session: String, val data: String) : Message
 
@@ -74,6 +82,8 @@ data class SessionInfo(
     val name: String,
     val cwd: String,
     val status: String,
+    @SerialName("started_at") val startedAt: Long = 0,
+    @SerialName("last_activity") val lastActivity: Long = 0,
 )
 
 @Serializable
@@ -82,6 +92,19 @@ data class Welcome(
     @SerialName("daemon_version") val daemonVersion: String,
     val hostname: String,
     val sessions: List<SessionInfo>,
+) : Message
+
+@Serializable
+@SerialName("sessions_update")
+data class SessionsUpdate(
+    val sessions: List<SessionInfo>,
+) : Message
+
+@Serializable
+@SerialName("path_checked")
+data class PathChecked(
+    val path: String,
+    @SerialName("is_dir") val isDir: Boolean,
 ) : Message
 
 @Serializable

@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.claude.remote.service.SessionService
+import com.claude.remote.ui.theme.ClaudeRemoteTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -73,7 +74,7 @@ class MainActivity : ComponentActivity() {
         startAndBindService()
 
         setContent {
-            MaterialTheme {
+            ClaudeRemoteTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val svc = service.value
                     if (svc == null) ConnectingPlaceholder() else AppRoot(svc)
@@ -126,6 +127,7 @@ private fun AppRoot(service: SessionService) {
     val lastError by service.lastError.collectAsState()
     val connections by service.connections.collectAsState()
     val uploadedPath by service.uploadedPath.collectAsState()
+    val pathChecks by service.pathChecks.collectAsState()
 
     // Surface daemon errors (e.g. bad cwd, session_creation_failed) as a toast.
     val ctx = LocalContext.current
@@ -174,6 +176,7 @@ private fun AppRoot(service: SessionService) {
             TerminalScreen(
                 sessionId = open,
                 output = output,
+                connState = connState,
                 uploadedPath = uploadedPath,
                 onConsumeUploadedPath = { service.consumeUploadedPath() },
                 onAttachFile = { picker.launch(arrayOf("*/*")) },
@@ -219,12 +222,21 @@ private fun AppRoot(service: SessionService) {
                 daemon = daemon,
                 sessions = sessions,
                 connState = connState,
+                pathChecks = pathChecks,
                 onOpenProject = { browseCwd = it.path },
+                onNewSession = { service.createSession(it.name, it.path) },
+                onTogglePin = { service.saveProject(daemon.id, it.copy(pinned = !it.pinned)) },
+                onCheckPath = { service.checkPath(it) },
                 onBrowsePath = { browseCwd = "" },
                 onSaveProject = { service.saveProject(daemon.id, it) },
                 onDeleteProject = { service.deleteProject(daemon.id, it) },
                 onOpenSession = { openId = it.id },
+                onRenameSession = { id, name -> service.renameSession(id, name) },
+                onKillSession = { service.killSession(it) },
+                onClearDead = { service.clearDeadSessions() },
                 onSwitchDaemon = { onConnections = true },
+                onReconnect = { service.reconnectNow() },
+                onDisconnect = { service.disconnect() },
             )
         }
     }

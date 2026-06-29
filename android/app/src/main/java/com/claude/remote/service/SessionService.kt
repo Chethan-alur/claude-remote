@@ -11,13 +11,16 @@ import com.claude.remote.data.ConnectionsStore
 import com.claude.remote.data.DaemonConfig
 import com.claude.remote.data.ProjectConfig
 import com.claude.remote.discovery.DaemonBrowser
+import com.claude.remote.model.CheckPath
 import com.claude.remote.model.FileUpload
 import com.claude.remote.model.FileUploaded
 import com.claude.remote.model.Input
 import com.claude.remote.model.DeleteSession
+import com.claude.remote.model.KillSession
 import com.claude.remote.model.ListSessions
 import com.claude.remote.model.Message
 import com.claude.remote.model.Output
+import com.claude.remote.model.PathChecked
 import com.claude.remote.model.PermissionRequest
 import com.claude.remote.model.PermissionResponse
 import com.claude.remote.model.ProjectSessionInfo
@@ -26,6 +29,7 @@ import com.claude.remote.model.SessionAttach
 import com.claude.remote.model.SessionCreate
 import com.claude.remote.model.SessionCreated
 import com.claude.remote.model.SessionInfo
+import com.claude.remote.model.SessionsUpdate
 import com.claude.remote.model.Welcome
 import com.claude.remote.net.WsClient
 import com.claude.remote.notif.NotifBuilder
@@ -69,6 +73,10 @@ class SessionService : Service() {
     private val browser by lazy { DaemonBrowser(this) }
     private var client: WsClient? = null
 
+    // The session whose terminal is currently open, so we can re-attach it on
+    // reconnect. Set by [attach]; survives a drop.
+    @Volatile private var openSessionId: String? = null
+
     // Saved daemons + projects + which one is active. Persisted via [store].
     private val _connections = MutableStateFlow(ConnectionsState())
     val connections: StateFlow<ConnectionsState> = _connections.asStateFlow()
@@ -97,6 +105,10 @@ class SessionService : Service() {
     // Past Claude sessions for the project folder currently being browsed.
     private val _projectSessions = MutableStateFlow<List<ProjectSessionInfo>>(emptyList())
     val projectSessions: StateFlow<List<ProjectSessionInfo>> = _projectSessions.asStateFlow()
+
+    // Results of check_path requests, keyed by the requested path → is-a-dir.
+    private val _pathChecks = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val pathChecks: StateFlow<Map<String, Boolean>> = _pathChecks.asStateFlow()
 
     // Id of the most recently created/resumed session, so the UI can navigate
     // to its terminal once `session_created` arrives. Cleared by consumeLastCreated().
@@ -171,8 +183,20 @@ class SessionService : Service() {
             launch { c.messages.collect { msg -> handleMessage(msg) } }
             launch {
                 c.state.collect { state ->
+                    val prev = _conn.value
                     _conn.value = state
                     notif.updateStatus(buildStatusText(state))
+                    // On a (re)connect, if a terminal is open, re-attach it with a
+                    // full replay so the screen repaints after the gap. Clearing
+                    // the buffer first makes TerminalScreen reset before the replay.
+                    if (state == WsClient.ConnState.Connected &&
+                        prev != WsClient.ConnState.Connected
+                    ) {
+                        openSessionId?.let { sid ->
+                            bufFor(sid).value = ""
+                            client?.send(SessionAttach(sid, replayBytes = 1_000_000))
+                        }
+                    }
                 }
             }
         }
@@ -187,6 +211,18 @@ class SessionService : Service() {
         _projectSessions.value = emptyList()
         outputs.clear()
         connect()
+    }
+
+    /** Manual "Reconnect" — tear down and reconnect to the active daemon. */
+    fun reconnectNow() = reconnect()
+
+    /** Manual "Disconnect" — stop and stay offline (no auto-retry) until reconnected. */
+    fun disconnect() {
+        collectJob?.cancel()
+        client?.close() // userClosed -> WsClient won't auto-retry
+        client = null
+        _conn.value = WsClient.ConnState.Disconnected
+        notif.updateStatus("Disconnected")
     }
 
     // --- daemon/project management (persist + update flow + reconnect as needed) ---
@@ -233,16 +269,20 @@ class SessionService : Service() {
         _messages.tryEmit(msg)
 
         when (msg) {
-            is Welcome -> _sessions.value = msg.sessions
+            is Welcome -> _sessions.value = applyNames(msg.sessions)
+
+            is SessionsUpdate -> _sessions.value = applyNames(msg.sessions)
 
             is SessionCreated -> {
                 val info = SessionInfo(msg.id, msg.name, msg.cwd, status = "running")
                 // Replace if a same-id entry already exists, else append.
-                _sessions.value = _sessions.value.filterNot { it.id == msg.id } + info
+                _sessions.value = applyNames(_sessions.value.filterNot { it.id == msg.id } + info)
                 _lastCreated.value = msg.id
             }
 
             is ProjectSessions -> _projectSessions.value = msg.sessions
+
+            is PathChecked -> _pathChecks.value = _pathChecks.value + (msg.path to msg.isDir)
 
             is FileUploaded -> _uploadedPath.value = msg.path
 
@@ -297,6 +337,8 @@ class SessionService : Service() {
         client?.send(DeleteSession(cwd, id))
 
     fun attach(sessionId: String) {
+        // Remember which terminal is open so a reconnect can re-attach it.
+        openSessionId = sessionId
         // Only ask for replay when we have no buffered output yet (first open or
         // after a reconnect clear). Re-attaching to a session we already hold the
         // scrollback for must NOT replay — handleMessage appends Output, so a
@@ -306,6 +348,30 @@ class SessionService : Service() {
     }
 
     fun sendInput(sessionId: String, data: String) = client?.send(Input(sessionId, data))
+
+    /** Terminate a live session on the daemon (daemon pushes a sessions_update). */
+    fun killSession(id: String) = client?.send(KillSession(id))
+
+    /** Remove all exited (dead) sessions from the daemon's registry. */
+    fun clearDeadSessions() {
+        _sessions.value.filter { it.status == "dead" }.forEach { client?.send(KillSession(it.id)) }
+    }
+
+    /** Ask the daemon whether a folder exists on the host; result lands in [pathChecks]. */
+    fun checkPath(path: String) = client?.send(CheckPath(path))
+
+    /** Set (or clear, when blank) a session's local display name. */
+    fun renameSession(id: String, name: String) {
+        _connections.value = store.setSessionName(id, name)
+        _sessions.value = applyNames(_sessions.value)
+    }
+
+    /** Overlay local display-name overrides on a daemon-provided session list. */
+    private fun applyNames(list: List<SessionInfo>): List<SessionInfo> {
+        val names = _connections.value.sessionNames
+        if (names.isEmpty()) return list
+        return list.map { s -> names[s.id]?.let { s.copy(name = it) } ?: s }
+    }
 
     /**
      * Upload a file to the session's project on the daemon. Reads/encodes off

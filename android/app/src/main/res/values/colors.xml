@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches DarkColors.background (#0F1117) — used for the window/system bars. -->
+    <color name="brand_bg">#0F1117</color>
+    <color name="brand_accent">#D97757</color>
+</resources>

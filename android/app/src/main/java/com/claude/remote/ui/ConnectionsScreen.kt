@@ -1,17 +1,27 @@
 package com.claude.remote.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -33,6 +43,9 @@ import com.claude.remote.data.DaemonConfig
 import com.claude.remote.data.newId
 import com.claude.remote.discovery.DaemonBrowser
 import com.claude.remote.net.WsClient
+import com.claude.remote.ui.components.EmptyState
+import com.claude.remote.ui.components.StatusChip
+import com.claude.remote.ui.components.connStateInfo
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -68,7 +81,7 @@ fun ConnectionsScreen(
             ExtendedFloatingActionButton(
                 onClick = { editing = null; showDialog = true },
                 text = { Text("Add daemon") },
-                icon = { Text("+") },
+                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
             )
         },
     ) { padding ->
@@ -79,10 +92,10 @@ fun ConnectionsScreen(
         ) {
             if (daemons.isEmpty()) {
                 item {
-                    Text(
-                        "No saved daemons. Tap “Add daemon”, or pick one discovered on your network below.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    EmptyState(
+                        icon = Icons.Filled.Dns,
+                        title = "No daemons yet",
+                        subtitle = "Add one with the button below, or pick a daemon discovered on your network.",
                     )
                 }
             }
@@ -149,27 +162,36 @@ private fun DaemonCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(onClick = onSelect, modifier = Modifier.fillMaxWidth()) {
+    Card(
+        onClick = onSelect,
+        modifier = Modifier.fillMaxWidth(),
+        border = if (active) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+    ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(daemon.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 if (active) {
-                    val (label, color) = when (connState) {
-                        WsClient.ConnState.Connected -> "● connected" to Color(0xFF22C55E)
-                        WsClient.ConnState.Connecting -> "● connecting" to Color(0xFFF59E0B)
-                        WsClient.ConnState.Disconnected -> "● offline" to Color(0xFFEF4444)
-                    }
-                    Text(label, color = color, style = MaterialTheme.typography.labelMedium)
+                    val (color, label) = connStateInfo(connState)
+                    StatusChip(color, label)
                 }
             }
             Text(
                 "${daemon.host}:${daemon.port} · ${daemon.projects.size} project(s)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
+                TextButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit")
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Delete")
+                }
             }
         }
     }
@@ -205,6 +227,7 @@ fun DaemonEditDialog(
                     value = host,
                     onValueChange = { host = it },
                     label = { Text("Host / IP") },
+                    supportingText = { Text("IP or hostname of the machine running the daemon") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -219,6 +242,7 @@ fun DaemonEditDialog(
                     value = token,
                     onValueChange = { token = it },
                     label = { Text("Device token") },
+                    supportingText = { Text("Pairing token; keep the default for local dev") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

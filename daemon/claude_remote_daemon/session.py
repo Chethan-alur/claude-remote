@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from time import time
-from typing import Optional
+from typing import Callable, Optional
 
 import ptyprocess
 
@@ -160,6 +160,16 @@ class SessionManager:
         # The command spawned for each session. Overridable for testing
         # without the real `claude` binary.
         self._claude_cmd = claude_cmd or ["claude"]
+        # Set by the server: called whenever the session set or a status changes
+        # (create / finalize / remove) so it can push a SessionsUpdate.
+        self.on_change: Callable[[], None] | None = None
+
+    def _fire_change(self) -> None:
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:  # never let a notify failure break lifecycle
+                logger.exception("on_change callback failed")
 
     async def create(self, name: str, cwd: str, resume_id: str = "") -> Session:
         """Spawn a new claude process in cwd, wrap it in a PTY, start the pump.
@@ -214,6 +224,7 @@ class SessionManager:
         loop.add_reader(fd, _on_readable)
         session.watchdog = loop.create_task(self._watch(session, loop))
         logger.info("spawned session %s (%s) in %s", session_id, name, path)
+        self._fire_change()
         return session
 
     async def _watch(self, session: Session, loop: asyncio.AbstractEventLoop) -> None:
@@ -255,6 +266,7 @@ class SessionManager:
             )
         )
         logger.info("session %s ended", session.id)
+        self._fire_change()
 
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
@@ -266,6 +278,7 @@ class SessionManager:
         s = self._sessions.pop(session_id, None)
         if s is not None:
             s.close()
+            self._fire_change()
 
     async def shutdown(self) -> None:
         for s in list(self._sessions.values()):

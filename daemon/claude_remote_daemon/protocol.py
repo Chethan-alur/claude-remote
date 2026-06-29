@@ -72,6 +72,18 @@ class FileUpload:
     type: str = "file_upload"
 
 
+@dataclass
+class KillSession:
+    id: str  # terminate the live session with this id
+    type: str = "kill_session"
+
+
+@dataclass
+class CheckPath:
+    path: str  # validate this folder exists on the daemon host
+    type: str = "check_path"
+
+
 # --- daemon -> phone ------------------------------------------------------
 
 @dataclass
@@ -80,6 +92,22 @@ class SessionInfo:
     name: str
     cwd: str
     status: str  # running | waiting | idle | dead
+    started_at: int = 0     # epoch seconds the session was created
+    last_activity: int = 0  # epoch seconds of the last output/input
+
+
+@dataclass
+class SessionsUpdate:
+    """Full live-session list, pushed whenever the set or a status changes."""
+    sessions: list[SessionInfo] = field(default_factory=list)
+    type: str = "sessions_update"
+
+
+@dataclass
+class PathChecked:
+    path: str
+    is_dir: bool
+    type: str = "path_checked"
 
 
 @dataclass
@@ -184,10 +212,14 @@ _TYPE_REGISTRY = {
     "session_attach": SessionAttach,
     "list_sessions": ListSessions,
     "delete_session": DeleteSession,
+    "kill_session": KillSession,
+    "check_path": CheckPath,
     "input": Input,
     "permission_response": PermissionResponse,
     "file_upload": FileUpload,
     "welcome": Welcome,
+    "sessions_update": SessionsUpdate,
+    "path_checked": PathChecked,
     "session_created": SessionCreated,
     "project_sessions": ProjectSessions,
     "output": Output,
@@ -218,7 +250,7 @@ def decode(raw: str) -> Any:
     # Strip "type" before passing to constructor; it'll be set by the default.
     payload = {k: v for k, v in data.items() if k != "type"}
     # Nested dataclass lists — special-case.
-    if cls is Welcome and "sessions" in payload:
+    if cls in (Welcome, SessionsUpdate) and "sessions" in payload:
         payload["sessions"] = [SessionInfo(**s) for s in payload["sessions"]]
     if cls is ProjectSessions and "sessions" in payload:
         payload["sessions"] = [ProjectSessionInfo(**s) for s in payload["sessions"]]

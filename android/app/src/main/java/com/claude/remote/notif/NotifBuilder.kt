@@ -57,8 +57,11 @@ class NotifBuilder(private val ctx: Context) {
         )
     }
 
+    private val accent = ctx.getColor(R.color.brand_accent)
+
     fun buildStatus(text: String) = NotificationCompat.Builder(ctx, CHAN_STATUS)
-        .setSmallIcon(android.R.drawable.stat_notify_sync)
+        .setSmallIcon(R.drawable.ic_stat_claude)
+        .setColor(accent)
         .setContentTitle("Claude Remote")
         .setContentText(text)
         .setOngoing(true)
@@ -72,6 +75,7 @@ class NotifBuilder(private val ctx: Context) {
         val notifId = req.id.hashCode()
         val n = NotificationCompat.Builder(ctx, CHAN_PERMISSIONS)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(accent)
             .setContentTitle("${req.tool} permission requested")
             .setContentText(req.summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(req.summary))
@@ -93,7 +97,8 @@ class NotifBuilder(private val ctx: Context) {
 
     fun postTaskComplete(sessionId: String, message: String) {
         val n = NotificationCompat.Builder(ctx, CHAN_COMPLETE)
-            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setSmallIcon(R.drawable.ic_stat_claude)
+            .setColor(accent)
             .setContentTitle("Task complete")
             .setContentText(message)
             .setAutoCancel(true)

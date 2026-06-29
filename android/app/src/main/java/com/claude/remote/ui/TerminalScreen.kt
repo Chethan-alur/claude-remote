@@ -4,23 +4,34 @@ import android.annotation.SuppressLint
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.KeyboardHide
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,8 +41,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.claude.remote.net.WsClient
+import com.claude.remote.ui.components.connStateInfo
 import org.json.JSONObject
 
 // Raw control sequences, built from code points so the source carries no
@@ -70,6 +85,7 @@ private val SHIFT_TAB = ESC + "[Z"
 fun TerminalScreen(
     sessionId: String,
     output: String,
+    connState: WsClient.ConnState,
     uploadedPath: String?,
     onConsumeUploadedPath: () -> Unit,
     onAttachFile: () -> Unit,
@@ -121,13 +137,29 @@ fun TerminalScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(sessionId, style = MaterialTheme.typography.titleSmall) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+                title = {
+                    Text(
+                        sessionId,
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
                 actions = {
+                    // Live connection indicator so a dropped daemon is visible here.
+                    val (dotColor, _) = connStateInfo(connState)
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+                    Spacer(Modifier.width(4.dp))
                     // Expand/collapse the control-key row (Esc/Tab/arrows/…).
                     // Collapsed by default to leave the most room for the terminal.
-                    TextButton(onClick = { keysExpanded = !keysExpanded }) {
-                        Text(if (keysExpanded) "⌨ ⌃" else "⌨ ⌄")
+                    IconButton(onClick = { keysExpanded = !keysExpanded }) {
+                        Icon(
+                            if (keysExpanded) Icons.Filled.KeyboardHide else Icons.Filled.Keyboard,
+                            contentDescription = "Toggle control keys",
+                        )
                     }
                 },
             )
@@ -174,10 +206,12 @@ fun TerminalScreen(
                 )
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onAttachFile) { Text("📎") }
+                IconButton(onClick = onAttachFile) {
+                    Icon(Icons.Filled.AttachFile, contentDescription = "Attach file")
+                }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -185,8 +219,16 @@ fun TerminalScreen(
                     placeholder = { Text("Send to Claude…") },
                     textStyle = MaterialTheme.typography.bodyMedium,
                 )
-                TextButton(onClick = { submit() }, enabled = draft.isNotEmpty()) {
-                    Text("Send")
+                IconButton(onClick = { submit() }, enabled = draft.isNotEmpty()) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (draft.isNotEmpty()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                 }
             }
         }
