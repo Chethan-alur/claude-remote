@@ -1,8 +1,19 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release signing config is read from android/keystore.properties (gitignored).
+// When absent (e.g. a fresh checkout), the release build stays unsigned rather
+// than failing — so debug-only contributors aren't blocked.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) FileInputStream(keystorePropsFile).use { load(it) }
 }
 
 android {
@@ -15,17 +26,31 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        // Starting daemon address. It's user-editable in the app (Connections
+        // screen), so this is just the prefilled default for the first daemon.
+        buildConfigField("String", "DEFAULT_DAEMON_HOST", "\"10.0.2.2\"") // emulator host alias
+        buildConfigField("int", "DEFAULT_DAEMON_PORT", "8765")
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropsFile.exists()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-        }
-        debug {
-            // POC convenience: hardcoded daemon address until pairing is wired up.
-            buildConfigField("String", "DEFAULT_DAEMON_HOST", "\"10.0.2.2\"") // Android emulator's host
-            buildConfigField("int", "DEFAULT_DAEMON_PORT", "8765")
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

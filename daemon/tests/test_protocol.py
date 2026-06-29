@@ -8,7 +8,10 @@ from __future__ import annotations
 import pytest
 
 from claude_remote_daemon.protocol import (
+    DeleteSession,
     Error,
+    FileUpload,
+    FileUploaded,
     Hello,
     Input,
     ListSessions,
@@ -34,6 +37,7 @@ MESSAGES = [
     SessionCreate(name="webapp", cwd="/home/me/code/webapp"),
     SessionCreate(name="webapp", cwd="/home/me/code/webapp", resume_id="976f-abcd"),
     ListSessions(cwd="/home/me/code/webapp"),
+    DeleteSession(cwd="/home/me/code/webapp", id="976f-abcd"),
     ProjectSessions(
         cwd="/home/me/code/webapp",
         sessions=[ProjectSessionInfo(id="976f", title="Refactor", modified=1729, messages=42)],
@@ -41,6 +45,15 @@ MESSAGES = [
     SessionAttach(id="sess_1", replay_bytes=65536),
     Input(session="sess_1", data="continue\n"),
     PermissionResponse(id="req_1", decision="allow"),
+    FileUpload(
+        session="sess_1",
+        filename="shot.png",
+        upload_id="u_1",
+        seq=0,
+        total=1,
+        data="aGVsbG8=",
+    ),
+    FileUploaded(session="sess_1", upload_id="u_1", path="/x/uploads/shot.png"),
     Welcome(
         daemon_version="0.1.0",
         hostname="dev-box",

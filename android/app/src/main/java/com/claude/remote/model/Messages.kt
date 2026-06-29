@@ -41,6 +41,10 @@ data class SessionAttach(
 data class ListSessions(val cwd: String) : Message
 
 @Serializable
+@SerialName("delete_session")
+data class DeleteSession(val cwd: String, val id: String) : Message
+
+@Serializable
 @SerialName("input")
 data class Input(val session: String, val data: String) : Message
 
@@ -49,6 +53,17 @@ data class Input(val session: String, val data: String) : Message
 data class PermissionResponse(
     val id: String,
     val decision: String, // allow | deny | allow_always | deny_always
+) : Message
+
+@Serializable
+@SerialName("file_upload")
+data class FileUpload(
+    val session: String,
+    val filename: String,
+    @SerialName("upload_id") val uploadId: String,
+    val seq: Int,
+    val total: Int,
+    @SerialName("data") val dataBase64: String,
 ) : Message
 
 // --- daemon -> phone ---
@@ -118,6 +133,14 @@ data class Notification(
     val kind: String, // task_complete | error | permission_timeout | info
     val message: String,
     val ts: Long,
+) : Message
+
+@Serializable
+@SerialName("file_uploaded")
+data class FileUploaded(
+    val session: String,
+    @SerialName("upload_id") val uploadId: String,
+    val path: String,
 ) : Message
 
 @Serializable

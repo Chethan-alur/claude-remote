@@ -15,22 +15,36 @@
   <script src="xterm.js"></script>
   <script>
     // Dimensions match the daemon's PTY (rows=40, cols=120) so claude's TUI
-    // lays out correctly. Input is handled by a native text field, so stdin
-    // is disabled here — this terminal is a read-only renderer.
+    // lays out correctly. The terminal is interactive: keystrokes (chars,
+    // backspace, Enter, arrows — xterm emits the right escape sequences) are
+    // forwarded to the daemon via the AndroidInput bridge and written to the PTY.
     var term = new Terminal({
       cols: 120,
       rows: 40,
       fontSize: 10,
       scrollback: 5000,
-      disableStdin: true,
+      disableStdin: false,
       convertEol: false,
       theme: { background: '#000000' }
     });
     term.open(document.getElementById('term'));
 
+    // Forward everything the user types (incl. control/escape sequences) to the
+    // native side, which relays it over the WebSocket as an `input` frame.
+    term.onData(function (d) {
+      if (window.AndroidInput && AndroidInput.send) AndroidInput.send(d);
+    });
+
+    // Tapping the terminal focuses xterm's hidden textarea so the soft keyboard
+    // opens and key events flow through onData.
+    document.getElementById('term').addEventListener('click', function () {
+      term.focus();
+    });
+
     // Bridge API called from Android via evaluateJavascript:
     window.termWrite = function (s) { term.write(s); };
     window.termReset = function () { term.reset(); };
+    window.termFocus = function () { term.focus(); };
     window.__termReady = true;
   </script>
 </body>

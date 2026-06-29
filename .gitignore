@@ -21,7 +21,16 @@ android/.cxx/
 *.apk
 *.aab
 
+### Signing secrets (never commit) ###
+android/keystore.properties
+android/keystore/
+*.jks
+*.keystore
+
 ### macOS / Linux / IDE noise ###
 .DS_Store
 *.swp
 .vscode/
+
+### Claude Code local tooling ###
+.claude/

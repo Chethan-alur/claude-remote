@@ -7,10 +7,12 @@ out-of-band `/pair` HTTP endpoint on the same port.
 from __future__ import annotations
 
 import asyncio
+import base64
 import http
 import json
 import logging
 import socket
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
@@ -18,9 +20,12 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 
 from . import __version__
-from .history import list_project_sessions
+from .history import delete_project_session, list_project_sessions
 from .protocol import (
+    DeleteSession,
     Error,
+    FileUpload,
+    FileUploaded,
     Hello,
     Input,
     ListSessions,
@@ -48,6 +53,31 @@ if TYPE_CHECKING:
     from .session import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+def _save_upload(cwd: Path, filename: str, data: bytes) -> Path:
+    """Write an uploaded file under `<cwd>/uploads/`, confined to the project.
+
+    The filename is reduced to its basename (path components stripped) so an
+    upload can never escape the uploads dir. Colliding names get a `-1`, `-2`,
+    … suffix rather than clobbering an existing file. Returns the saved path.
+    """
+    safe_name = Path(filename).name or "upload.bin"
+    uploads = (cwd / "uploads").resolve()
+    uploads.mkdir(parents=True, exist_ok=True)
+    # Defence in depth: the basename above already prevents traversal, but
+    # re-check the resolved parent is the uploads dir.
+    dest = (uploads / safe_name).resolve()
+    if dest.parent != uploads:
+        raise ValueError(f"refusing to write outside uploads dir: {dest}")
+    if dest.exists():
+        stem, suffix = dest.stem, dest.suffix
+        i = 1
+        while (uploads / f"{stem}-{i}{suffix}").exists():
+            i += 1
+        dest = uploads / f"{stem}-{i}{suffix}"
+    dest.write_bytes(data)
+    return dest
 
 
 class WsServer:
@@ -205,22 +235,16 @@ class WsServer:
             await self._attach(ws, s, replay_bytes=0, attached_tasks=attached_tasks)
 
         elif isinstance(msg, ListSessions):
-            found = list_project_sessions(msg.cwd)
-            await self._send(
-                ws,
-                ProjectSessions(
-                    cwd=msg.cwd,
-                    sessions=[
-                        ProjectSessionInfo(
-                            id=p.id,
-                            title=p.title,
-                            modified=p.modified,
-                            messages=p.messages,
-                        )
-                        for p in found
-                    ],
-                ),
-            )
+            await self._send_project_sessions(ws, msg.cwd)
+
+        elif isinstance(msg, DeleteSession):
+            try:
+                delete_project_session(msg.cwd, msg.id)
+            except Exception as e:
+                await self._send(ws, Error(code="bad_message", message=str(e)))
+                return
+            # Reply with the refreshed list so the picker updates.
+            await self._send_project_sessions(ws, msg.cwd)
 
         elif isinstance(msg, SessionAttach):
             session = self.sessions.get(msg.id)
@@ -241,6 +265,34 @@ class WsServer:
                 )
                 return
             session.write(msg.data.encode())
+
+        elif isinstance(msg, FileUpload):
+            session = self.sessions.get(msg.session)
+            if session is None:
+                await self._send(
+                    ws, Error(code="session_not_found", message=msg.session)
+                )
+                return
+            buf = session.pending_uploads.setdefault(msg.upload_id, bytearray())
+            try:
+                buf.extend(base64.b64decode(msg.data))
+            except Exception as e:
+                session.pending_uploads.pop(msg.upload_id, None)
+                await self._send(ws, Error(code="upload_failed", message=str(e)))
+                return
+            if msg.seq >= msg.total - 1:  # last chunk
+                session.pending_uploads.pop(msg.upload_id, None)
+                try:
+                    dest = _save_upload(session.cwd, msg.filename, bytes(buf))
+                except Exception as e:
+                    await self._send(ws, Error(code="upload_failed", message=str(e)))
+                    return
+                await self._send(
+                    ws,
+                    FileUploaded(
+                        session=session.id, upload_id=msg.upload_id, path=str(dest)
+                    ),
+                )
 
         elif isinstance(msg, PermissionResponse):
             self.hooks.resolve(msg.id, msg.decision)
@@ -290,6 +342,25 @@ class WsServer:
                     session.subscribers.remove(q)
 
         attached_tasks.append(asyncio.create_task(pump()))
+
+    async def _send_project_sessions(self, ws: ServerConnection, cwd: str) -> None:
+        """Send the current past-session list for a project folder."""
+        found = list_project_sessions(cwd)
+        await self._send(
+            ws,
+            ProjectSessions(
+                cwd=cwd,
+                sessions=[
+                    ProjectSessionInfo(
+                        id=p.id,
+                        title=p.title,
+                        modified=p.modified,
+                        messages=p.messages,
+                    )
+                    for p in found
+                ],
+            ),
+        )
 
     async def _send(self, ws: ServerConnection, msg) -> None:
         await ws.send(encode(msg))

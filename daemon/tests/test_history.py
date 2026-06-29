@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from claude_remote_daemon.history import (
+    delete_project_session,
     encode_project_dir,
     list_project_sessions,
 )
@@ -53,3 +56,31 @@ def test_lists_sessions_with_titles_newest_first(tmp_path, monkeypatch):
 
 def test_unknown_project_returns_empty(tmp_path):
     assert list_project_sessions("/no/such/project", projects_root=tmp_path) == []
+
+
+def test_delete_removes_transcript(tmp_path):
+    cwd = "/home/me/proj"
+    proj = tmp_path / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+    target = proj / "aaaaaaaa-0000.jsonl"
+    _write_transcript(target, first_user="hi", turns=1)
+    keep = proj / "bbbbbbbb-1111.jsonl"
+    _write_transcript(keep, first_user="hey", turns=1)
+
+    assert delete_project_session(cwd, "aaaaaaaa-0000", projects_root=tmp_path) is True
+    assert not target.exists()
+    assert keep.exists()
+    # Gone from the listing.
+    assert [s.id for s in list_project_sessions(cwd, projects_root=tmp_path)] == ["bbbbbbbb-1111"]
+
+
+def test_delete_missing_returns_false(tmp_path):
+    cwd = "/home/me/proj"
+    (tmp_path / encode_project_dir(cwd)).mkdir(parents=True)
+    assert delete_project_session(cwd, "nope", projects_root=tmp_path) is False
+
+
+@pytest.mark.parametrize("bad_id", ["../../etc/passwd", "a/b", "..", ""])
+def test_delete_rejects_path_traversal(tmp_path, bad_id):
+    with pytest.raises(ValueError):
+        delete_project_session("/home/me/proj", bad_id, projects_root=tmp_path)

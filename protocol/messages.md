@@ -56,6 +56,18 @@ Daemon spawns a `claude` process in the given cwd. Replies with `session_created
 
 Asks for the past Claude Code sessions stored on disk for that project folder (what `claude --resume` / the VS Code extension lists). Daemon replies with `project_sessions`.
 
+### delete_session (phone → daemon)
+
+```json
+{ "type": "delete_session", "cwd": "/home/josh/code/webapp", "id": "976f4811-..." }
+```
+
+Deletes a past session's transcript on disk (the `<id>.jsonl` under the project's
+history dir) — the same action as the VS Code extension's delete. `id` must be a bare
+session id (file stem); the daemon refuses ids containing path separators. After deleting,
+the daemon replies with a refreshed `project_sessions` for that `cwd` (so the picker
+updates), or `error` (`bad_message`) on an invalid id.
+
 ### project_sessions (daemon → phone)
 
 ```json
@@ -99,6 +111,22 @@ Raw bytes from the PTY. Daemon should batch — one frame per ~16ms of output is
 ```
 
 Bytes to write to the PTY. Include trailing newline if you want the line submitted.
+
+### file_upload (phone → daemon)
+
+```json
+{ "type": "file_upload", "session": "sess_8a3f", "filename": "screenshot.png", "upload_id": "u_1a2b", "seq": 0, "total": 1, "data": "iVBORw0KGgo..." }
+```
+
+Uploads a file (image or any binary) to the session's project so Claude can read it. The file is split into chunks to keep each WS frame bounded: `upload_id` groups the chunks, `seq` is the 0-based index, `total` the chunk count, and `data` is the base64 of this chunk. The daemon reassembles the chunks, writes the file under `<cwd>/uploads/` (basename only — path components in `filename` are stripped; colliding names get a `-1`, `-2`, … suffix), and replies with `file_uploaded` once the last chunk (`seq == total - 1`) arrives. On failure it replies with `error` (`upload_failed`). An empty file is sent as a single chunk with `total: 1` and empty `data`.
+
+### file_uploaded (daemon → phone)
+
+```json
+{ "type": "file_uploaded", "session": "sess_8a3f", "upload_id": "u_1a2b", "path": "/home/josh/code/webapp/uploads/screenshot.png" }
+```
+
+Acknowledges a completed `file_upload`. `path` is the saved absolute path on the daemon host; the phone inserts it into the prompt draft so the file becomes part of the next message to Claude.
 
 ### permission_request (daemon → phone)
 
@@ -174,6 +202,7 @@ Error codes:
 - `session_not_found`
 - `session_creation_failed` — bad cwd, claude not on PATH, etc.
 - `bad_message` — couldn't parse JSON or unknown type
+- `upload_failed` — a `file_upload` could not be written (bad path, I/O error)
 - `internal` — daemon bug
 
 ## Pairing (out of band)

@@ -9,7 +9,10 @@
     <string name="notif_channel_complete_desc">Lets you know when Claude finishes a task.</string>
 
     <string name="notif_perm_action_allow">Allow</string>
-    <string name="notif_perm_action_always">Always</string>
     <string name="notif_perm_action_deny">Deny</string>
+    <!-- Android shows at most 3 notification actions, so the inline reply is the
+         3rd slot: deny the tool and (optionally) tell Claude what to do instead.
+         Typing "allow"/"always"/"never" still maps to those decisions. -->
     <string name="notif_perm_action_voice_label">Reply</string>
+    <string name="notif_perm_reply_hint">No — tell Claude what to do instead</string>
 </resources>

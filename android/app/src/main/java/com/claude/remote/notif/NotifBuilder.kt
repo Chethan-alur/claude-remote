@@ -79,10 +79,12 @@ class NotifBuilder(private val ctx: Context) {
             .setCategory(NotificationCompat.CATEGORY_CALL) // wakes screen, bypasses DnD-lite
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC) // show on lock screen
             .setAutoCancel(true)
+            // Android renders at most 3 actions, so the 3rd is an inline reply
+            // that denies and forwards your text as the next prompt. "Always"
+            // (allow_always) is reachable by typing "always" into that reply.
             .addAction(actionFor(req.id, "allow", R.string.notif_perm_action_allow))
-            .addAction(actionFor(req.id, "allow_always", R.string.notif_perm_action_always))
             .addAction(actionFor(req.id, "deny", R.string.notif_perm_action_deny))
-            .addAction(voiceReplyAction(req.id))
+            .addAction(voiceReplyAction(req.id, req.session))
             .build()
         mgr.notify(notifId, n)
     }
@@ -115,15 +117,17 @@ class NotifBuilder(private val ctx: Context) {
         return NotificationCompat.Action.Builder(0, ctx.getString(labelRes), pi).build()
     }
 
-    private fun voiceReplyAction(reqId: String): NotificationCompat.Action {
+    private fun voiceReplyAction(reqId: String, session: String): NotificationCompat.Action {
         val remoteInput = RemoteInput.Builder(KEY_VOICE_REPLY)
-            .setLabel(ctx.getString(R.string.notif_perm_action_voice_label))
+            .setLabel(ctx.getString(R.string.notif_perm_reply_hint))
             .setAllowFreeFormInput(true)
             .build()
         val intent = Intent(ctx, PermissionActionReceiver::class.java).apply {
             action = SessionService.ACTION_PERMISSION_RESPONSE
             putExtra(SessionService.EXTRA_REQ_ID, reqId)
             putExtra(SessionService.EXTRA_DECISION, "voice") // receiver maps transcript -> decision
+            // Carry the session so a freeform reply can be routed to it as a prompt.
+            putExtra(SessionService.EXTRA_SESSION, session)
         }
         val pi = PendingIntent.getBroadcast(
             ctx, ("voice$reqId").hashCode(), intent,

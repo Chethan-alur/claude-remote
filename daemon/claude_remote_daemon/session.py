@@ -78,6 +78,10 @@ class Session:
     # Values are "allow" | "deny". Consulted before bothering the user again.
     perm_prefs: dict[str, str] = field(default_factory=dict)
 
+    # In-progress file uploads, keyed by upload_id. Chunks are appended in
+    # arrival order; flushed to disk and removed once the last chunk lands.
+    pending_uploads: dict[str, bytearray] = field(default_factory=dict)
+
     # Background watchdog task (set by SessionManager).
     watchdog: Optional[asyncio.Task] = None
 

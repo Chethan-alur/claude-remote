@@ -4,9 +4,17 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.util.Base64
 import android.util.Log
-import com.claude.remote.data.Settings
+import com.claude.remote.data.ConnectionsState
+import com.claude.remote.data.ConnectionsStore
+import com.claude.remote.data.DaemonConfig
+import com.claude.remote.data.ProjectConfig
+import com.claude.remote.discovery.DaemonBrowser
+import com.claude.remote.model.FileUpload
+import com.claude.remote.model.FileUploaded
 import com.claude.remote.model.Input
+import com.claude.remote.model.DeleteSession
 import com.claude.remote.model.ListSessions
 import com.claude.remote.model.Message
 import com.claude.remote.model.Output
@@ -26,12 +34,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -55,8 +65,13 @@ class SessionService : Service() {
     private var collectJob: Job? = null
 
     private lateinit var notif: NotifBuilder
-    private lateinit var settings: Settings
+    private lateinit var store: ConnectionsStore
+    private val browser by lazy { DaemonBrowser(this) }
     private var client: WsClient? = null
+
+    // Saved daemons + projects + which one is active. Persisted via [store].
+    private val _connections = MutableStateFlow(ConnectionsState())
+    val connections: StateFlow<ConnectionsState> = _connections.asStateFlow()
 
     private val _messages = MutableSharedFlow<Message>(extraBufferCapacity = 64)
     val messages: SharedFlow<Message> = _messages
@@ -94,6 +109,12 @@ class SessionService : Service() {
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
     fun consumeError() { _lastError.value = null }
 
+    // Saved path of the most recent completed upload, for the terminal to insert
+    // into the prompt draft. Cleared by consumeUploadedPath().
+    private val _uploadedPath = MutableStateFlow<String?>(null)
+    val uploadedPath: StateFlow<String?> = _uploadedPath.asStateFlow()
+    fun consumeUploadedPath() { _uploadedPath.value = null }
+
     inner class LocalBinder : Binder() {
         val service: SessionService = this@SessionService
     }
@@ -104,13 +125,10 @@ class SessionService : Service() {
         super.onCreate()
         notif = NotifBuilder(this)
         notif.ensureChannels()
-        settings = Settings(this)
+        store = ConnectionsStore(this)
+        _connections.value = store.load()
         startForeground(NotifBuilder.STATUS_NOTIF_ID, notif.buildStatus("Connecting..."))
     }
-
-    /** Current daemon address, for display/editing in the UI. */
-    val daemonHost: String get() = settings.daemonHost
-    val daemonPort: Int get() = settings.daemonPort
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -120,15 +138,31 @@ class SessionService : Service() {
                 val decision = intent.getStringExtra(EXTRA_DECISION) ?: return START_STICKY
                 client?.send(PermissionResponse(id = id, decision = decision))
                 notif.cancelPermission(id)
+                // "No, and tell Claude what to do instead": when the reply carries
+                // freeform guidance, deny the tool and forward the text as the
+                // session's next prompt (submitted with CR, like the terminal).
+                val session = intent.getStringExtra(EXTRA_SESSION)
+                val message = intent.getStringExtra(EXTRA_MESSAGE)
+                if (!session.isNullOrEmpty() && !message.isNullOrBlank()) {
+                    client?.send(Input(session, message + "\r"))
+                }
             }
         }
         return START_STICKY
     }
 
+    private fun activeDaemon(): DaemonConfig? =
+        _connections.value.daemons.firstOrNull { it.id == _connections.value.activeDaemonId }
+
     private fun connect() {
         if (client != null) return
-        val url = "ws://${settings.daemonHost}:${settings.daemonPort}/"
-        val c = WsClient(url, settings.token)
+        val d = activeDaemon() ?: run {
+            _conn.value = WsClient.ConnState.Disconnected
+            notif.updateStatus("No daemon selected")
+            return
+        }
+        val url = "ws://${d.host}:${d.port}/"
+        val c = WsClient(url, d.token)
         client = c
         c.connect()
 
@@ -148,17 +182,44 @@ class SessionService : Service() {
         collectJob?.cancel()
         client?.close()
         client = null
-        _sessions.value = emptyList()  // drop sessions from the previous daemon
+        // Drop state from the previous daemon so it can't leak into the new view.
+        _sessions.value = emptyList()
+        _projectSessions.value = emptyList()
         outputs.clear()
         connect()
     }
 
-    /** Persist a new daemon address and reconnect to it. */
-    fun updateDaemon(host: String, port: Int) {
-        settings.daemonHost = host
-        settings.daemonPort = port
+    // --- daemon/project management (persist + update flow + reconnect as needed) ---
+
+    /** Make a daemon active and connect to it. */
+    fun selectDaemon(daemonId: String) {
+        _connections.value = store.setActive(daemonId)
         reconnect()
     }
+
+    /** Insert or update a daemon; reconnect if the active one changed. */
+    fun saveDaemon(d: DaemonConfig) {
+        _connections.value = store.upsertDaemon(d)
+        if (d.id == _connections.value.activeDaemonId) reconnect()
+    }
+
+    /** Delete a daemon; if it was active, drop the connection. */
+    fun deleteDaemon(id: String) {
+        val wasActive = id == _connections.value.activeDaemonId
+        _connections.value = store.deleteDaemon(id)
+        if (wasActive) reconnect()  // activeDaemon() is now null -> lands Disconnected
+    }
+
+    fun saveProject(daemonId: String, p: ProjectConfig) {
+        _connections.value = store.upsertProject(daemonId, p)
+    }
+
+    fun deleteProject(daemonId: String, projectId: String) {
+        _connections.value = store.deleteProject(daemonId, projectId)
+    }
+
+    /** mDNS-discovered daemons on the LAN, for quick-add suggestions. */
+    fun discoverDaemons(): Flow<DaemonBrowser.Daemon> = browser.browse()
 
     private fun buildStatusText(state: WsClient.ConnState): String = when (state) {
         WsClient.ConnState.Connected -> "Connected"
@@ -182,6 +243,8 @@ class SessionService : Service() {
             }
 
             is ProjectSessions -> _projectSessions.value = msg.sessions
+
+            is FileUploaded -> _uploadedPath.value = msg.path
 
             is Output -> {
                 val buf = bufFor(msg.session)
@@ -229,9 +292,50 @@ class SessionService : Service() {
         client?.send(ListSessions(cwd))
     }
 
-    fun attach(sessionId: String) = client?.send(SessionAttach(sessionId))
+    /** Delete a past session's transcript; daemon replies with the refreshed list. */
+    fun deleteProjectSession(cwd: String, id: String) =
+        client?.send(DeleteSession(cwd, id))
+
+    fun attach(sessionId: String) {
+        // Only ask for replay when we have no buffered output yet (first open or
+        // after a reconnect clear). Re-attaching to a session we already hold the
+        // scrollback for must NOT replay — handleMessage appends Output, so a
+        // second replay would duplicate the entire terminal history.
+        val replay = if (bufFor(sessionId).value.isEmpty()) 1_000_000 else 0
+        client?.send(SessionAttach(sessionId, replayBytes = replay))
+    }
 
     fun sendInput(sessionId: String, data: String) = client?.send(Input(sessionId, data))
+
+    /**
+     * Upload a file to the session's project on the daemon. Reads/encodes off
+     * the main thread and chunks at 256 KB raw to bound each WS frame. The
+     * daemon replies with `file_uploaded`; its path lands in [uploadedPath].
+     */
+    fun uploadFile(sessionId: String, filename: String, bytes: ByteArray) {
+        val c = client ?: run {
+            _lastError.value = "Not connected — can't upload"
+            return
+        }
+        scope.launch {
+            val uploadId = UUID.randomUUID().toString()
+            val chunk = 256 * 1024
+            if (bytes.isEmpty()) {
+                c.send(FileUpload(sessionId, filename, uploadId, 0, 1, ""))
+                return@launch
+            }
+            val total = (bytes.size + chunk - 1) / chunk
+            var seq = 0
+            var off = 0
+            while (off < bytes.size) {
+                val end = minOf(off + chunk, bytes.size)
+                val b64 = Base64.encodeToString(bytes.copyOfRange(off, end), Base64.NO_WRAP)
+                c.send(FileUpload(sessionId, filename, uploadId, seq, total, b64))
+                off = end
+                seq++
+            }
+        }
+    }
 
     fun send(msg: Message) { client?.send(msg) }
 
@@ -247,5 +351,7 @@ class SessionService : Service() {
         const val ACTION_PERMISSION_RESPONSE = "com.claude.remote.PERMISSION_RESPONSE"
         const val EXTRA_REQ_ID = "req_id"
         const val EXTRA_DECISION = "decision"
+        const val EXTRA_SESSION = "session"
+        const val EXTRA_MESSAGE = "message"
     }
 }

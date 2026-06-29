@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,10 +49,12 @@ fun ProjectScreen(
     onLoad: (cwd: String) -> Unit,
     onResume: (ProjectSessionInfo, cwd: String) -> Unit,
     onStartNew: (cwd: String) -> Unit,
+    onDelete: (ProjectSessionInfo, cwd: String) -> Unit,
     onBack: () -> Unit,
 ) {
     var cwd by rememberSaveable { mutableStateOf(initialCwd) }
     var loading by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<ProjectSessionInfo?>(null) }
     val trimmed = cwd.trim()
     val connected = connState == WsClient.ConnState.Connected
     val valid = trimmed.isNotEmpty() && connected
@@ -112,30 +115,65 @@ fun ProjectScreen(
                 )
                 else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(sessions, key = { it.id }) { s ->
-                        SessionHistoryCard(s) { onResume(s, trimmed) }
+                        SessionHistoryCard(
+                            s = s,
+                            onClick = { onResume(s, trimmed) },
+                            onDelete = { pendingDelete = s },
+                        )
                     }
                 }
             }
         }
     }
+
+    pendingDelete?.let { s ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete session?") },
+            text = {
+                Text(
+                    "Permanently delete “${s.title.ifBlank { "(untitled session)" }}”? " +
+                        "This removes its transcript on the daemon and can't be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    loading = true
+                    onDelete(s, trimmed)
+                    pendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionHistoryCard(s: ProjectSessionInfo, onClick: () -> Unit) {
+private fun SessionHistoryCard(
+    s: ProjectSessionInfo,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                s.title.ifBlank { "(untitled session)" },
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 2,
-            )
-            Text(
-                "${s.messages} messages · ${relativeTime(s.modified)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+        Row(
+            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    s.title.ifBlank { "(untitled session)" },
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                )
+                Text(
+                    "${s.messages} messages · ${relativeTime(s.modified)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            TextButton(onClick = onDelete) { Text("🗑") }
         }
     }
 }

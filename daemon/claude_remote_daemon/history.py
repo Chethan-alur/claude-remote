@@ -58,6 +58,31 @@ def list_project_sessions(
     return sessions
 
 
+def delete_project_session(
+    cwd: str, session_id: str, projects_root: Path = PROJECTS_ROOT
+) -> bool:
+    """Delete a past session's transcript. Returns True if a file was removed.
+
+    `session_id` must be a bare file stem (no path separators) so deletion can
+    never escape the project directory. Raises ValueError on a bad id.
+    """
+    if (
+        not session_id
+        or "/" in session_id
+        or "\\" in session_id
+        or session_id in (".", "..")
+    ):
+        raise ValueError(f"invalid session id: {session_id!r}")
+    project_dir = (projects_root / encode_project_dir(cwd)).resolve()
+    target = (project_dir / f"{session_id}.jsonl").resolve()
+    if target.parent != project_dir:
+        raise ValueError("refusing to delete outside the project directory")
+    if not target.is_file():
+        return False
+    target.unlink()
+    return True
+
+
 def _read_session(path: Path) -> ProjectSession:
     title: str | None = None
     first_user: str | None = None

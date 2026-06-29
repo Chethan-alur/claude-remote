@@ -34,6 +34,13 @@ class ListSessions:
 
 
 @dataclass
+class DeleteSession:
+    cwd: str
+    id: str  # the past session's id (transcript file stem)
+    type: str = "delete_session"
+
+
+@dataclass
 class SessionAttach:
     id: str
     replay_bytes: int = 0
@@ -52,6 +59,17 @@ class PermissionResponse:
     id: str
     decision: str  # allow | deny | allow_always | deny_always
     type: str = "permission_response"
+
+
+@dataclass
+class FileUpload:
+    session: str
+    filename: str
+    upload_id: str  # groups the chunks of one file
+    seq: int  # 0-based chunk index
+    total: int  # total number of chunks
+    data: str  # base64 of this chunk
+    type: str = "file_upload"
 
 
 # --- daemon -> phone ------------------------------------------------------
@@ -124,6 +142,14 @@ class Notification:
 
 
 @dataclass
+class FileUploaded:
+    session: str
+    upload_id: str
+    path: str  # saved absolute path on the daemon host
+    type: str = "file_uploaded"
+
+
+@dataclass
 class Error:
     code: str
     message: str
@@ -157,14 +183,17 @@ _TYPE_REGISTRY = {
     "session_create": SessionCreate,
     "session_attach": SessionAttach,
     "list_sessions": ListSessions,
+    "delete_session": DeleteSession,
     "input": Input,
     "permission_response": PermissionResponse,
+    "file_upload": FileUpload,
     "welcome": Welcome,
     "session_created": SessionCreated,
     "project_sessions": ProjectSessions,
     "output": Output,
     "permission_request": PermissionRequest,
     "notification": Notification,
+    "file_uploaded": FileUploaded,
     "error": Error,
     "ping": Ping,
     "pong": Pong,
