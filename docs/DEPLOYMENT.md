@@ -48,7 +48,11 @@ how you pick up a moved checkout. Concretely it:
    (`daemon/.venv/bin/claude-remote-daemon`) is present.
 2. On the **first** run, copies `daemon/systemd/claude-remote.env.example` to
    `~/.config/claude-remote/daemon.env`. On later runs it leaves your edited
-   copy untouched.
+   copy untouched. Either way it then ensures `CLAUDE_REMOTE_CLAUDE_CMD` (the
+   absolute path to `claude`, detected from your shell) and `PATH` (your current
+   PATH) are present in that file — adding each only if absent, so your edits are
+   never clobbered. This is what lets the daemon, running under systemd's minimal
+   PATH, find `claude` and give the sessions it spawns a usable environment.
 3. Renders `daemon/systemd/claude-remote.service` (a template containing
    `@DAEMON_BIN@`, `@WORKDIR@`, `@ENVFILE@` placeholders) into
    `~/.config/systemd/user/claude-remote.service`, substituting absolute paths.
@@ -68,6 +72,8 @@ All tunables live in `~/.config/claude-remote/daemon.env`, a plain
 | `BIND`       | `0.0.0.0` | Interface the WebSocket server binds to. Use `127.0.0.1` to restrict the daemon to this machine (e.g. when reached only over a locally-terminated WireGuard tunnel). |
 | `PORT`       | `8770`    | WebSocket port. Must match the Android app and the mDNS advert. |
 | `EXTRA_ARGS` | `-v`      | Extra flags, split on whitespace. `-v`/`-vv` raise log verbosity; `--require-auth` rejects any device that has not paired. |
+| `CLAUDE_REMOTE_CLAUDE_CMD` | *(auto)* | Absolute path to the `claude` binary, auto-seeded by `install-service.sh` from your shell. Needed because the systemd PATH is minimal and would not find a `claude` in `~/.local/bin`. |
+| `PATH`       | *(auto)*  | PATH for the daemon **and the sessions it spawns** (they inherit it), auto-seeded from your shell's PATH at install time so `claude` and your tools resolve. |
 
 After editing, restart the service:
 
@@ -170,3 +176,10 @@ sudo loginctl disable-linger "$USER"   # optional
 - **Permission requests never reach the phone.** That is the hook layer, not
   the service — verify `./scripts/install-hooks.sh` ran and the
   `claude-remote-hook` symlink resolves (see `daemon/README.md`).
+- **Creating a session fails with `failed to spawn [claude]`.** The systemd
+  service's PATH is minimal and does not include `~/.local/bin` (where the
+  native installer puts `claude`). Set `CLAUDE_REMOTE_CLAUDE_CMD` to claude's
+  absolute path (`command -v claude`) in `daemon.env` and
+  `systemctl --user restart claude-remote`. Re-running `./scripts/install-service.sh`
+  also seeds this automatically. The spawned sessions inherit the daemon's
+  `PATH`, so set `PATH` there too if a session cannot find your other tools.

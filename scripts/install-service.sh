@@ -51,6 +51,37 @@ else
   echo "Keeping existing $ENV_FILE."
 fi
 
+# Make the daemon able to find `claude` and your tools.
+#
+# A systemd user service runs with a minimal PATH (no ~/.local/bin, pnpm, pyenv
+# shims, ...). So a bare `claude` fails to spawn, and the sessions the daemon
+# starts cannot find your tools either (they inherit the daemon's environment).
+# Pin claude's absolute path and capture the PATH you are installing with.
+#
+# Idempotent and non-destructive: a key is written only if it is absent, so your
+# edits are preserved and re-running self-heals an install that predates this.
+ensure_env_key() {
+  local key="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  grep -qE "^${key}=" "$ENV_FILE" && return 0   # already set — leave it
+  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  echo "Set $key in $ENV_FILE"
+}
+
+# Resolve claude: prefer the invoking shell's PATH, then the default install dir.
+CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+if [[ -z "$CLAUDE_BIN" && -x "$HOME/.local/bin/claude" ]]; then
+  CLAUDE_BIN="$HOME/.local/bin/claude"
+fi
+if [[ -z "$CLAUDE_BIN" ]]; then
+  echo "warning: could not find 'claude' on PATH or in ~/.local/bin." >&2
+  echo "         Set CLAUDE_REMOTE_CLAUDE_CMD=<absolute path to claude> in" >&2
+  echo "         $ENV_FILE and restart the service, or sessions will fail to" >&2
+  echo "         spawn ('failed to spawn [claude]')." >&2
+fi
+ensure_env_key CLAUDE_REMOTE_CLAUDE_CMD "$CLAUDE_BIN"
+ensure_env_key PATH "$PATH"
+
 # Render the unit by substituting the absolute paths. sed with a non-/ delimiter
 # avoids escaping the path separators.
 mkdir -p "$UNIT_DIR"
