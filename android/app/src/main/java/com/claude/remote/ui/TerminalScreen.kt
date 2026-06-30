@@ -181,7 +181,23 @@ fun TerminalScreen(
             AndroidView(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 factory = { ctx ->
-                    WebView(ctx).apply {
+                    // Override the IME input type to VISIBLE_PASSWORD + NO_SUGGESTIONS so
+                    // the soft keyboard (Gboard) does NOT compose. Otherwise it composes
+                    // into xterm's hidden textarea and xterm.onData fires only on commit
+                    // (space/enter), so per-key edits — and especially Backspace — never
+                    // reach the PTY and the cursor desyncs. Visible-password mode makes
+                    // every key a discrete event xterm forwards immediately.
+                    object : WebView(ctx) {
+                        override fun onCreateInputConnection(
+                            outAttrs: android.view.inputmethod.EditorInfo,
+                        ): android.view.inputmethod.InputConnection? {
+                            val ic = super.onCreateInputConnection(outAttrs)
+                            outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                                android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                            return ic
+                        }
+                    }.apply {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         // Focusable so tapping the terminal opens the soft

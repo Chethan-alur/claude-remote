@@ -6,7 +6,12 @@
   <link rel="stylesheet" href="xterm.css">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; width: 100%; background: #000; overflow: hidden; }
-    #term { height: 100%; width: 100%; }
+    /* Size against the viewport directly. A percentage-height chain
+       (html/body/#term all height:100%) collapses to 0 inside this WebView
+       — the page reports a real width but zero height — which starves xterm of
+       vertical space and renders the terminal blank. Fixed insets track the
+       viewport regardless of the parent height chain. */
+    #term { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
     .xterm { padding: 4px; }
     /* The terminal must never be wider than the screen; xterm is sized to fit. */
     .xterm-viewport { overflow-x: hidden !important; }
@@ -21,9 +26,15 @@
     // fit, resize xterm to that grid, and report it to the native side, which
     // tells the daemon to resize the PTY (SIGWINCH) so claude's TUI reflows to
     // the same width. cols/rows here are therefore dynamic, not fixed.
+
+    // Start at a sane fixed grid so the terminal always renders even if the
+    // fit-to-width measurement below is unavailable; fit() refines it once the
+    // renderer has measured a cell.
     var term = new Terminal({
+      cols: 80,
+      rows: 24,
       fontSize: 12,
-      scrollback: 5000,
+      scrollback: 50000,
       disableStdin: false,
       convertEol: false,
       theme: { background: '#000000' }
@@ -76,6 +87,12 @@
     // Forward everything the user types (incl. control/escape sequences) to the
     // native side, which relays it over the WebSocket as an `input` frame.
     term.onData(function (d) {
+      // Don't forward mouse-tracking reports. claude enables mouse modes, so
+      // xterm would emit SGR (ESC[<…M/m) or legacy (ESC[M…) mouse sequences on
+      // every tap — but on a touch screen a tap is meant to focus and raise the
+      // keyboard, not click inside claude's TUI. Swallow them; menus are driven
+      // by the on-screen arrow/Tab keys instead.
+      if (/^\x1b\[(<[0-9;]*[Mm]|M)/.test(d)) return;
       if (window.AndroidInput && AndroidInput.send) AndroidInput.send(d);
     });
 
@@ -93,10 +110,18 @@
     // the daemon's spawn size and must be told this phone's dimensions.
     window.termRefit = function () { lastCols = 0; lastRows = 0; fit(); };
 
-    // The renderer needs a tick to measure the cell size after open(); fit then,
-    // and once more shortly after in case web-font metrics settle late.
-    setTimeout(fit, 0);
-    setTimeout(fit, 250);
+    // The renderer needs a tick to measure the cell size after open(), and the
+    // WebView can report zero height for the first frame or two. Keep fitting
+    // until the container has a real size (fit succeeds, so lastCols > 0), then
+    // stop; the ResizeObserver handles later rotations/keyboard changes.
+    var fitTries = 0;
+    function fitUntilSized() {
+      fit();
+      if (lastCols === 0 && fitTries++ < 120) {
+        requestAnimationFrame(fitUntilSized);
+      }
+    }
+    requestAnimationFrame(fitUntilSized);
     window.__termReady = true;
   </script>
 </body>
