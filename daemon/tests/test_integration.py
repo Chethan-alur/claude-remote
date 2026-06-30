@@ -17,10 +17,13 @@ import websockets
 from claude_remote_daemon.auth import AuthStore
 from claude_remote_daemon.hooks import HookBridge
 from claude_remote_daemon.protocol import (
+    DirListing,
+    Error,
     FileUpload,
     FileUploaded,
     Hello,
     Input,
+    ListDir,
     ListSessions,
     Output,
     ProjectSessions,
@@ -190,6 +193,49 @@ async def test_list_sessions_empty_project(tmp_path):
             reply = decode(await ws.recv())
             assert isinstance(reply, ProjectSessions)
             assert reply.sessions == []
+
+
+async def test_list_dir_returns_subdirectories(tmp_path):
+    # A folder with two sub-dirs and a regular file; only the dirs should appear.
+    (tmp_path / "webapp").mkdir()
+    (tmp_path / "api").mkdir()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "README.md").write_text("hi")
+
+    auth = AuthStore(tmp_path / "devices.json")
+    sessions = SessionManager(claude_cmd=FAKE_CLAUDE)
+    hooks = HookBridge(str(tmp_path / "hook.sock"), sessions)
+    server = WsServer("127.0.0.1", 0, sessions, hooks, auth)
+
+    async with websockets.serve(server._handle, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}/") as ws:
+            await ws.send(encode(Hello(token="x")))
+            await ws.recv()  # welcome
+            await ws.send(encode(ListDir(path=str(tmp_path))))
+            reply = decode(await ws.recv())
+            assert isinstance(reply, DirListing)
+            assert reply.path == str(tmp_path.resolve())
+            assert reply.parent == str(tmp_path.resolve().parent)
+            # Folders only (incl. hidden), no files; sorted case-insensitively.
+            assert reply.entries == [".git", "api", "webapp"]
+
+
+async def test_list_dir_not_a_directory_errors(tmp_path):
+    auth = AuthStore(tmp_path / "devices.json")
+    sessions = SessionManager(claude_cmd=FAKE_CLAUDE)
+    hooks = HookBridge(str(tmp_path / "hook.sock"), sessions)
+    server = WsServer("127.0.0.1", 0, sessions, hooks, auth)
+
+    async with websockets.serve(server._handle, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}/") as ws:
+            await ws.send(encode(Hello(token="x")))
+            await ws.recv()  # welcome
+            await ws.send(encode(ListDir(path=str(tmp_path / "nope"))))
+            reply = decode(await ws.recv())
+            assert isinstance(reply, Error)
+            assert reply.code == "not_a_dir"
 
 
 async def test_create_bad_cwd_returns_error(tmp_path):

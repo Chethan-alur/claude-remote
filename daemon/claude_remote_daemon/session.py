@@ -69,6 +69,17 @@ class Session:
     # for; it has no PTY, so output/input are unavailable.
     origin: str = "spawned"
 
+    # Claude Code's own session_id for the conversation this session drives.
+    # For spawned sessions it is learned from the first hook payload (or set
+    # eagerly to the resume id); for adopted sessions it is the adoption key.
+    # Used to detect a takeover collision and to resume the same conversation.
+    cc_session_id: str = ""
+
+    # Best-effort OS pid of the external claude process (adopted sessions only),
+    # resolved from the hook socket's peer credentials. Lets an Android takeover
+    # SIGTERM the desktop copy. None when unknown / for spawned sessions.
+    claude_pid: Optional[int] = None
+
     # Set by SessionManager.create()
     proc: Optional[ptyprocess.PtyProcess] = None
 
@@ -231,7 +242,11 @@ class SessionManager:
         except (OSError, FileNotFoundError) as exc:
             raise ValueError(f"failed to spawn {self._claude_cmd!r}: {exc}") from exc
 
-        session = Session(id=session_id, name=name, cwd=path, proc=proc)
+        # When resuming, the conversation id is known up front; otherwise it is
+        # learned from the first hook payload (HookBridge sets cc_session_id).
+        session = Session(
+            id=session_id, name=name, cwd=path, proc=proc, cc_session_id=resume_id
+        )
         self._sessions[session_id] = session
 
         loop = asyncio.get_running_loop()
@@ -257,19 +272,22 @@ class SessionManager:
         self._fire_change()
         return session
 
-    def adopt(self, cc_session_id: str, cwd: str) -> Session:
+    def adopt(self, cc_session_id: str, cwd: str, pid: int | None = None) -> Session:
         """Register a PTY-less session for a claude we did not spawn.
 
         Used when desktop->mobile handoff is enabled and a hook fires for an
         external (e.g. VSCode) session. Keyed on Claude Code's own session_id
         (from the hook payload) so repeated hooks reuse the same record. The
         session carries no process, so output/input are unavailable — it exists
-        only to surface permission prompts on the phone.
+        only to surface permission prompts on the phone. `pid` is the best-effort
+        OS pid of the external claude (for an Android takeover to SIGTERM it).
         """
         existing_id = self._adopted.get(cc_session_id)
         if existing_id is not None:
             existing = self._sessions.get(existing_id)
             if existing is not None:
+                if pid is not None:
+                    existing.claude_pid = pid
                 return existing
             # Mapping went stale (session removed) — fall through and re-adopt.
 
@@ -282,12 +300,26 @@ class SessionManager:
             cwd=path,
             origin="adopted",
             proc=None,
+            cc_session_id=cc_session_id,
+            claude_pid=pid,
         )
         self._sessions[session_id] = session
         self._adopted[cc_session_id] = session_id
         logger.info("adopted external session %s (cc=%s) in %s", session_id, cc_session_id, path)
         self._fire_change()
         return session
+
+    def spawned_by_cc_id(self, cc_session_id: str) -> Session | None:
+        """A daemon-owned (spawned) session currently driving the given Claude
+        Code conversation, if any. Used to detect a desktop takeover collision:
+        if the desktop resumes a conversation the daemon owns, the daemon kills
+        its own copy so the transcript is not written by two processes at once."""
+        if not cc_session_id:
+            return None
+        for s in self._sessions.values():
+            if s.origin == "spawned" and s.cc_session_id == cc_session_id:
+                return s
+        return None
 
     def prune_stale_adopted(self) -> int:
         """Remove adopted sessions idle past ADOPTED_TTL_SEC. Returns the count."""

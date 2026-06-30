@@ -12,17 +12,20 @@ import com.claude.remote.data.DaemonConfig
 import com.claude.remote.data.ProjectConfig
 import com.claude.remote.discovery.DaemonBrowser
 import com.claude.remote.model.CheckPath
+import com.claude.remote.model.DirListing
 import com.claude.remote.model.FileUpload
 import com.claude.remote.model.FileUploaded
 import com.claude.remote.model.Input
 import com.claude.remote.model.DeleteSession
 import com.claude.remote.model.HandoffState
 import com.claude.remote.model.KillSession
+import com.claude.remote.model.ListDir
 import com.claude.remote.model.ListSessions
 import com.claude.remote.model.Message
 import com.claude.remote.model.Output
 import com.claude.remote.model.PathChecked
 import com.claude.remote.model.PermissionRequest
+import com.claude.remote.model.PermissionResolved
 import com.claude.remote.model.PermissionResponse
 import com.claude.remote.model.ProjectSessionInfo
 import com.claude.remote.model.ProjectSessions
@@ -33,6 +36,7 @@ import com.claude.remote.model.SessionCreated
 import com.claude.remote.model.SessionInfo
 import com.claude.remote.model.SessionsUpdate
 import com.claude.remote.model.SetHandoff
+import com.claude.remote.model.TakeOver
 import com.claude.remote.model.Welcome
 import com.claude.remote.net.WsClient
 import com.claude.remote.notif.NotifBuilder
@@ -116,6 +120,11 @@ class SessionService : Service() {
     // Results of check_path requests, keyed by the requested path → is-a-dir.
     private val _pathChecks = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val pathChecks: StateFlow<Map<String, Boolean>> = _pathChecks.asStateFlow()
+
+    // Most recent dir_listing response, for the folder browser. Null until the
+    // first list_dir reply arrives.
+    private val _dirListing = MutableStateFlow<DirListing?>(null)
+    val dirListing: StateFlow<DirListing?> = _dirListing.asStateFlow()
 
     // Id of the most recently created/resumed session, so the UI can navigate
     // to its terminal once `session_created` arrives. Cleared by consumeLastCreated().
@@ -216,6 +225,7 @@ class SessionService : Service() {
         // Drop state from the previous daemon so it can't leak into the new view.
         _sessions.value = emptyList()
         _projectSessions.value = emptyList()
+        _dirListing.value = null
         outputs.clear()
         connect()
     }
@@ -296,6 +306,8 @@ class SessionService : Service() {
 
             is PathChecked -> _pathChecks.value = _pathChecks.value + (msg.path to msg.isDir)
 
+            is DirListing -> _dirListing.value = msg
+
             is FileUploaded -> _uploadedPath.value = msg.path
 
             is Output -> {
@@ -308,10 +320,21 @@ class SessionService : Service() {
                 notif.postPermissionRequest(msg)
             }
 
+            is PermissionResolved -> {
+                // Another client answered first, or the request expired and fell
+                // through to the local prompt — dismiss our now-stale notification.
+                notif.cancelPermission(msg.id)
+            }
+
             is com.claude.remote.model.Notification -> {
-                if (msg.kind == "task_complete") {
-                    updateStatus(msg.session, "idle")
-                    notif.postTaskComplete(msg.session, msg.message)
+                when (msg.kind) {
+                    "task_complete" -> {
+                        updateStatus(msg.session, "idle")
+                        notif.postTaskComplete(msg.session, msg.message)
+                    }
+                    // Surface a warning (e.g. takeover could not stop the desktop
+                    // session) via the app's transient message channel.
+                    "warning", "error" -> _lastError.value = msg.message
                 }
             }
 
@@ -368,6 +391,13 @@ class SessionService : Service() {
     /** Terminate a live session on the daemon (daemon pushes a sessions_update). */
     fun killSession(id: String) = client?.send(KillSession(id))
 
+    /**
+     * Take over an adopted (desktop) session: the daemon stops the desktop
+     * claude and resumes the conversation as a daemon-owned session we can
+     * drive. The session then arrives as origin "spawned" via sessions_update.
+     */
+    fun takeOver(id: String) = client?.send(TakeOver(id))
+
     /** Remove all exited (dead) sessions from the daemon's registry. */
     fun clearDeadSessions() {
         _sessions.value.filter { it.status == "dead" }.forEach { client?.send(KillSession(it.id)) }
@@ -375,6 +405,20 @@ class SessionService : Service() {
 
     /** Ask the daemon whether a folder exists on the host; result lands in [pathChecks]. */
     fun checkPath(path: String) = client?.send(CheckPath(path))
+
+    /**
+     * Ask the daemon to list a folder's sub-directories for the picker; the
+     * reply lands in [dirListing]. A blank path starts at the daemon's home.
+     *
+     * Clearing [dirListing] to null first makes a null value reliably mean "a
+     * request is in flight" — the browser's loading signal. Without this, a
+     * StateFlow would dedupe an unchanged listing (e.g. revisiting a folder),
+     * leaving the spinner stuck because no new value is emitted.
+     */
+    fun requestDir(path: String) {
+        _dirListing.value = null
+        client?.send(ListDir(path))
+    }
 
     /**
      * Toggle desktop->mobile handoff. When enabled, the daemon forwards

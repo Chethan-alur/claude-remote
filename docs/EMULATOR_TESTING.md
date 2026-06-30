@@ -154,7 +154,7 @@ adb install -r "$HOME\app-debug.apk"
 ### Path B — copy the source and build on Windows
 ```powershell
 # copy just the android project (OpenSSH scp ships with Windows 10+)
-scp -r calur@10.141.1.136:/home/calur/github/claude-remote/android "$HOME\claude-remote-android"
+scp -r calur@10.141.1.136:/home/calur/github/claude-remote/clients/android "$HOME\claude-remote-android"
 cd "$HOME\claude-remote-android"
 # prune any copied build artifacts so the build is clean
 Remove-Item -Recurse -Force .\app\build, .\.gradle -ErrorAction SilentlyContinue

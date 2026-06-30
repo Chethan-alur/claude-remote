@@ -153,9 +153,12 @@ Acknowledges a completed `file_upload`. `path` is the saved absolute path on the
 }
 ```
 
-Daemon emits this when a `PreToolUse` hook fires for a tool the user has not pre-approved. The phone shows a notification and/or in-app card. `summary` is a single-line human description suitable for a notification body. `input` is the raw tool input — phone can show it expanded if user taps for detail.
+Daemon emits this when a `PermissionRequest` hook fires for a tool the user has not pre-approved. It is **broadcast to every connected client** (phone and desktop), each of which shows a notification and/or in-app card. `summary` is a single-line human description suitable for a notification body. `input` is the raw tool input — a client can show it expanded if the user taps for detail.
 
-The daemon waits up to 5 minutes for a response. After timeout, it auto-denies and emits a `notification` explaining why.
+Fan-out and fallback behaviour:
+- If **no client is connected** when the request arrives, the daemon does not broadcast and immediately returns passthrough so Claude Code's own local terminal prompt handles it.
+- If clients are connected, the daemon broadcasts and waits up to a **configurable client-wait timeout** (`--permission-wait`, default 30 s — kept well below Claude's 600 s hook timeout). The **first** client to answer wins; the daemon then emits `permission_resolved` so the other clients dismiss the prompt.
+- If the wait expires with no answer, the daemon emits `permission_resolved` (`reason: "expired"`) and returns passthrough — it does **not** auto-deny — so the local terminal prompt takes over.
 
 ### permission_response (phone → daemon)
 
@@ -169,7 +172,20 @@ Decision values:
 - `allow_always` — allow all future calls of this tool with the same input shape (per-session)
 - `deny_always` — deny all future calls (per-session)
 
-The daemon converts this to the JSON Claude Code expects from a hook (`{"decision": "approve"}` or `{"decision": "block", "reason": "..."}`) and writes it to the hook script's stdout via the Unix socket reply.
+The first response for a given `id` wins; later responses (e.g. from a slower client) are ignored. The daemon converts the winning decision to the JSON Claude Code expects from a `PermissionRequest` hook (`hookSpecificOutput.decision.behavior` = `allow` | `deny`) and writes it to the hook script's stdout via the Unix socket reply.
+
+### permission_resolved (daemon → phone)
+
+```json
+{ "type": "permission_resolved", "id": "req_8a3f01", "reason": "answered", "decision": "allow" }
+```
+
+Broadcast daemon-wide to tell every client that a pending `permission_request` is no longer actionable, so each client dismisses its prompt/notification for that `id`.
+
+- `reason: "answered"` — another client responded first; `decision` carries the winning value.
+- `reason: "expired"` — the client-wait timed out and the request fell through to the local terminal prompt; `decision` is empty.
+
+Note: a request answered at the **local** terminal cannot be detected by the daemon (hooks do not report the outcome of the interactive prompt), so no `permission_resolved` is emitted in that case — clients dismiss those stale prompts on their own (e.g. manually, or when the daemon later expires them).
 
 ### notification (daemon → phone)
 
@@ -187,6 +203,7 @@ Kinds:
 - `task_complete` — fired when `Stop` hook runs (Claude finished its turn)
 - `error` — Claude or the daemon hit an error worth surfacing
 - `permission_timeout` — auto-denied a permission after 5 min
+- `warning` — a non-fatal warning worth surfacing (e.g. a takeover could not stop the desktop session)
 - `info` — generic info (used sparingly)
 
 The phone should turn this into a heads-up notification.
@@ -223,6 +240,18 @@ Error codes:
 ```
 
 Terminates the live session's PTY process. The daemon then pushes a `sessions_update` to every connected client. Unknown ids are ignored. (Distinct from `delete_session`, which only removes an on-disk transcript.)
+
+### take_over (phone → daemon)
+
+```json
+{ "type": "take_over", "id": "sess_8a3f" }
+```
+
+Takes control of an **adopted** (desktop/VSCode) session so the app can drive its prompts. The daemon: (1) best-effort **kills the desktop `claude`** process (SIGTERM via the pid it resolved from the hook socket's peer credentials); (2) spawns a new daemon-owned PTY running `claude --resume <that conversation's session_id>`; (3) drops the adopted record. A `sessions_update` then shows the conversation as `origin: "spawned"`, so the app's terminal input becomes available. Only one `claude` may drive a conversation at a time — resuming the same conversation on the desktop would otherwise interleave/corrupt the transcript.
+
+If the desktop process cannot be stopped (pid unknown or already gone), the daemon still resumes and sends a warning `notification` (`kind: "warning"`) so the user knows to exit the desktop session manually.
+
+The reverse direction needs no message: when the desktop runs `claude --resume <id>` for a conversation the daemon currently owns, its `SessionStart` hook lets the daemon detect the collision and kill **its own** copy.
 
 ### sessions_update (daemon → phone)
 
@@ -272,6 +301,34 @@ Asks the daemon whether a folder exists on the host. Daemon replies with `path_c
 ```
 
 `is_dir` is true only if the path resolves to an existing directory on the daemon host.
+
+### list_dir (phone → daemon)
+
+```json
+{ "type": "list_dir", "path": "/home/josh/code" }
+```
+
+Asks the daemon for the immediate **sub-directories** (folders only — never files) of
+a folder on the host, so the phone can offer a directory picker for choosing a project
+cwd. An empty or blank `path` starts at the daemon user's home directory. Daemon replies
+with `dir_listing`, or `error` (`not_a_dir`) when the path is not a directory.
+
+### dir_listing (daemon → phone)
+
+```json
+{
+  "type": "dir_listing",
+  "path": "/home/josh/code",
+  "parent": "/home/josh",
+  "entries": ["webapp", "scratch", ".config"]
+}
+```
+
+`path` is the resolved absolute path that was listed. `parent` is its parent directory
+(for navigating "up"), or `""` when `path` is a filesystem root. `entries` are the
+immediate sub-directory names, sorted case-insensitively; hidden folders (leading `.`)
+are included, and the phone filters them behind a "show hidden" toggle. An unreadable
+folder yields an empty `entries` rather than an error, so navigation never dead-ends.
 
 ## Pairing (out of band)
 

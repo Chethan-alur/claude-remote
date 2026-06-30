@@ -12,9 +12,10 @@ Control Claude Code on your dev machine from your Android phone. Get push notifi
                                               [Claude Code CLI]
 ```
 
-- **daemon/** — Python package that runs on your dev machine. Spawns `claude` inside a PTY, exposes an asyncio WebSocket server on the LAN, advertises itself via mDNS, and bridges Claude Code's permission hooks to/from the phone.
-- **android/** — Kotlin + Jetpack Compose app. Discovers daemons via mDNS, holds a foreground-service WebSocket, shows live terminal output, and surfaces permission requests as notification action buttons (Allow / Deny / Always) that work from the lock screen.
-- **protocol/** — JSON message schemas shared between the two sides.
+- **daemon/** — Python package that runs on your dev machine. Spawns `claude` inside a PTY, exposes an asyncio WebSocket server on the LAN, advertises itself via mDNS, and bridges Claude Code's permission hooks to/from every connected client.
+- **clients/android/** — Kotlin + Jetpack Compose app. Discovers daemons via mDNS, holds a foreground-service WebSocket, shows live terminal output, and surfaces permission requests as notification action buttons (Allow / Deny / Always) that work from the lock screen.
+- **clients/windows/** — PowerShell WebSocket client that shows native Windows toasts with Approve/Deny buttons (`legacy/` holds the retired HTTP-over-SSH-tunnel bridges).
+- **protocol/** — JSON message schemas shared between all sides.
 - **docs/** — Design doc, protocol spec, hook integration notes.
 - **scripts/** — Setup helpers.
 
@@ -41,7 +42,7 @@ sudo ln -s "$(pwd)/.venv/bin/claude-remote-hook" /usr/local/bin/claude-remote-ho
 claude-remote-daemon -v
 
 # 5. Build and install the Android app
-cd ../android
+cd ../clients/android
 ./gradlew installDebug
 ```
 

@@ -11,8 +11,11 @@ import base64
 import http
 import json
 import logging
+import os
+import signal
 import socket
 from pathlib import Path
+from time import time
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +27,7 @@ from .history import delete_project_session, list_project_sessions
 from .protocol import (
     CheckPath,
     DeleteSession,
+    DirListing,
     Error,
     FileUpload,
     FileUploaded,
@@ -31,8 +35,10 @@ from .protocol import (
     Hello,
     Input,
     KillSession,
+    ListDir,
     Resize,
     ListSessions,
+    Notification,
     Output,
     PathChecked,
     PermissionResponse,
@@ -46,10 +52,12 @@ from .protocol import (
     SessionInfo,
     SessionsUpdate,
     SetHandoff,
+    TakeOver,
     Welcome,
     decode,
     encode,
 )
+from .hooks import pid_is_claude
 
 # Per-subscriber queue depth before a slow client starts dropping frames.
 SUBSCRIBER_QUEUE_MAX = 512
@@ -112,6 +120,13 @@ class WsServer:
         # Let the hook bridge fan permission/notification frames out to every
         # connected client (adopted sessions have no attached subscriber).
         self.hooks.broadcast_all = self._schedule_broadcast_all
+        # Let the hook bridge check whether any client is connected, so a
+        # permission request with no listener falls straight through to the
+        # local terminal prompt instead of blocking until the wait expires.
+        self.hooks.has_clients = self._has_clients
+
+    def _has_clients(self) -> bool:
+        return len(self._clients) > 0
 
     def _sessions_info(self) -> list[SessionInfo]:
         return [
@@ -149,11 +164,22 @@ class WsServer:
             try:
                 await ws.send(frame)
             except Exception:
-                pass  # best-effort; the client's own handler cleans up
+                # Send failed — the socket is dead. Prune it now so the live
+                # set stays accurate and we don't keep forwarding to it (the
+                # client's own handler also discards, but may not have run yet).
+                self._clients.discard(ws)
 
     async def serve(self) -> None:
         async with websockets.serve(
-            self._handle, self.bind, self.port, process_request=self._http_request
+            self._handle,
+            self.bind,
+            self.port,
+            process_request=self._http_request,
+            # Active heartbeat: the library sends a WS PING every 20s and closes
+            # the connection if no PONG arrives within 20s, so dead clients are
+            # detected and evicted (via _handle's finally) without us polling.
+            ping_interval=20,
+            ping_timeout=20,
         ):
             logger.info("websocket server on ws://%s:%d", self.bind, self.port)
             await asyncio.Future()  # serve forever
@@ -359,9 +385,15 @@ class WsServer:
             # SessionsUpdate to every client so lists stay in sync.
             self.sessions.remove(msg.id)
 
+        elif isinstance(msg, TakeOver):
+            await self._take_over(ws, msg.id, attached_tasks)
+
         elif isinstance(msg, CheckPath):
             p = Path(msg.path).expanduser()
             await self._send(ws, PathChecked(path=msg.path, is_dir=p.is_dir()))
+
+        elif isinstance(msg, ListDir):
+            await self._send_dir_listing(ws, msg.path)
 
         elif isinstance(msg, PermissionResponse):
             self.hooks.resolve(msg.id, msg.decision)
@@ -378,6 +410,73 @@ class WsServer:
                 Error(
                     code="bad_message",
                     message=f"unexpected message type: {type(msg).__name__}",
+                ),
+            )
+
+    async def _take_over(
+        self, ws: ServerConnection, session_id: str, attached_tasks: list[asyncio.Task]
+    ) -> None:
+        """Take control of an adopted (desktop) session from the app.
+
+        Best-effort SIGTERM the desktop claude, then spawn a daemon-owned
+        `claude --resume <conversation id>` so the app can drive it. If the
+        desktop copy could not be stopped, we still resume and warn — so the
+        user knows to exit it (two processes on one transcript interleave it).
+        """
+        session = self.sessions.get(session_id)
+        if session is None or session.origin != "adopted":
+            await self._send(
+                ws, Error(code="not_adopted", message=session_id)
+            )
+            return
+
+        cc_id = session.cc_session_id
+        cwd = str(session.cwd)
+        name = session.name
+        pid = session.claude_pid
+
+        if not cc_id:
+            await self._send(
+                ws,
+                Error(code="takeover_failed", message="unknown conversation id"),
+            )
+            return
+
+        # Best-effort: stop the desktop claude so only one process drives the
+        # conversation. Re-check the pid still maps to claude to avoid killing a
+        # reused pid.
+        killed = False
+        if pid_is_claude(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed = True
+                logger.info("takeover: SIGTERM desktop claude pid %s", pid)
+            except OSError as e:
+                logger.warning("takeover: SIGTERM pid %s failed: %s", pid, e)
+
+        # Drop the adopted record (frees the cc-id mapping) before resuming.
+        self.sessions.remove(session.id)
+
+        try:
+            s = await self.sessions.create(name, cwd, resume_id=cc_id)
+        except Exception as e:
+            await self._send(ws, Error(code="takeover_failed", message=str(e)))
+            return
+
+        await self._send(ws, SessionCreated(id=s.id, name=s.name, cwd=str(s.cwd)))
+        await self._attach(ws, s, replay_bytes=0, attached_tasks=attached_tasks)
+
+        if not killed:
+            await self._send(
+                ws,
+                Notification(
+                    session=s.id,
+                    kind="warning",
+                    message=(
+                        "Resumed on the app, but the desktop session may still be "
+                        "running — exit it there to avoid conflicting edits."
+                    ),
+                    ts=int(time()),
                 ),
             )
 
@@ -435,6 +534,41 @@ class WsServer:
                     for p in found
                 ],
             ),
+        )
+
+    async def _send_dir_listing(self, ws: ServerConnection, path: str) -> None:
+        """List a folder's immediate sub-directories for the phone's browser.
+
+        Folders only — never files (the app is a remote control, not a file
+        manager). An empty/blank `path` starts at the daemon user's home. The
+        phone already has full control of this host (it can spawn `claude` in
+        any cwd and upload files), so directory listing introduces no new trust
+        boundary; we therefore do not sandbox the traversal. Unreadable folders
+        yield an empty `entries` rather than an error so navigation never dead-ends.
+        """
+        raw = path.strip()
+        base = Path(raw).expanduser() if raw else Path.home()
+        try:
+            base = base.resolve()
+        except Exception:
+            base = Path.home()
+        if not base.is_dir():
+            await self._send(
+                ws, Error(code="not_a_dir", message=f"not a directory: {base}")
+            )
+            return
+        try:
+            entries = sorted(
+                (p.name for p in base.iterdir() if p.is_dir()),
+                key=str.lower,
+            )
+        except (PermissionError, OSError):
+            entries = []
+        # At a filesystem root, `.parent` is the path itself — report "" so the
+        # phone knows there is no "up" to offer.
+        parent = "" if base.parent == base else str(base.parent)
+        await self._send(
+            ws, DirListing(path=str(base), parent=parent, entries=entries)
         )
 
     async def _send(self, ws: ServerConnection, msg) -> None:

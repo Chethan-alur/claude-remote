@@ -10,20 +10,20 @@ __pycache__/
 .ruff_cache/
 
 ### Android ###
-android/.gradle/
-android/.idea/
-android/build/
-android/app/build/
-android/local.properties
-android/captures/
-android/.cxx/
+clients/android/.gradle/
+clients/android/.idea/
+clients/android/build/
+clients/android/app/build/
+clients/android/local.properties
+clients/android/captures/
+clients/android/.cxx/
 *.iml
 *.apk
 *.aab
 
 ### Signing secrets (never commit) ###
-android/keystore.properties
-android/keystore/
+clients/android/keystore.properties
+clients/android/keystore/
 *.jks
 *.keystore
 

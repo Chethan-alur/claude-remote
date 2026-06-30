@@ -55,6 +55,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reject WebSocket clients whose token is not a paired device "
         "(default: accept any token with a warning, for early dev)",
     )
+    p.add_argument(
+        "--permission-wait",
+        type=float,
+        default=float(os.environ.get("CLAUDE_REMOTE_PERMISSION_WAIT", "30")),
+        help="Seconds to wait for a client to answer a permission request "
+        "before falling through to Claude's local prompt (default: 30; "
+        "must stay below the hook CLI's 310s read timeout)",
+    )
     p.add_argument("-v", "--verbose", action="count", default=0)
     return p.parse_args(argv)
 
@@ -66,7 +74,7 @@ async def run(args: argparse.Namespace) -> None:
 
     auth = AuthStore(args.state_dir / "devices.json")
     sessions = SessionManager(hook_socket=args.hook_socket, claude_cmd=claude_cmd)
-    hooks = HookBridge(args.hook_socket, sessions)
+    hooks = HookBridge(args.hook_socket, sessions, client_wait=args.permission_wait)
     server = WsServer(
         args.bind, args.port, sessions, hooks, auth, require_auth=args.require_auth
     )

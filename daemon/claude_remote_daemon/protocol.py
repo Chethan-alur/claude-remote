@@ -87,9 +87,21 @@ class KillSession:
 
 
 @dataclass
+class TakeOver:
+    id: str  # adopted (desktop) session id to take over and drive from the app
+    type: str = "take_over"
+
+
+@dataclass
 class CheckPath:
     path: str  # validate this folder exists on the daemon host
     type: str = "check_path"
+
+
+@dataclass
+class ListDir:
+    path: str  # folder to list on the daemon host; "" => the daemon user's home
+    type: str = "list_dir"
 
 
 @dataclass
@@ -123,6 +135,15 @@ class PathChecked:
     path: str
     is_dir: bool
     type: str = "path_checked"
+
+
+@dataclass
+class DirListing:
+    """Immediate sub-directories of `path` (folders only — never files)."""
+    path: str  # the resolved absolute path that was listed
+    parent: str  # absolute path of the parent dir, "" when already at the root
+    entries: list[str] = field(default_factory=list)  # sub-directory names, sorted
+    type: str = "dir_listing"
 
 
 @dataclass
@@ -184,9 +205,20 @@ class PermissionRequest:
 
 
 @dataclass
+class PermissionResolved:
+    """Tells every other client to dismiss a permission prompt that is no longer
+    actionable: another client answered it, or it expired and fell through to the
+    local terminal prompt. Fanned out daemon-wide alongside `permission_request`."""
+    id: str
+    reason: str  # answered | expired
+    decision: str = ""  # the winning decision when reason == "answered"; else ""
+    type: str = "permission_resolved"
+
+
+@dataclass
 class Notification:
     session: str
-    kind: str  # task_complete | error | permission_timeout | info
+    kind: str  # task_complete | error | permission_timeout | warning | info
     message: str
     ts: int
     type: str = "notification"
@@ -236,7 +268,9 @@ _TYPE_REGISTRY = {
     "list_sessions": ListSessions,
     "delete_session": DeleteSession,
     "kill_session": KillSession,
+    "take_over": TakeOver,
     "check_path": CheckPath,
+    "list_dir": ListDir,
     "set_handoff": SetHandoff,
     "input": Input,
     "resize": Resize,
@@ -246,10 +280,12 @@ _TYPE_REGISTRY = {
     "handoff_state": HandoffState,
     "sessions_update": SessionsUpdate,
     "path_checked": PathChecked,
+    "dir_listing": DirListing,
     "session_created": SessionCreated,
     "project_sessions": ProjectSessions,
     "output": Output,
     "permission_request": PermissionRequest,
+    "permission_resolved": PermissionResolved,
     "notification": Notification,
     "file_uploaded": FileUploaded,
     "error": Error,

@@ -1,0 +1,250 @@
+<#
+  claude-notify-listener.ps1
+  Runs on the LOCAL Windows machine. Bridges remote Claude Code hooks (over the
+  SSH RemoteForward tunnel) to native Windows toasts.
+
+  Endpoints (all on 127.0.0.1:<Port>):
+    POST /notify            body = plain text   -> simple alert toast (idle/info)
+    POST /prompt            body = {id,message} -> toast with Approve / Deny buttons
+    GET  /decide?id=&v=     (from toast button) -> records the decision, then pulls
+                                                   the SSH-session window to the front
+    GET  /decision?id=      (polled by remote)  -> returns allow | deny | pending
+
+  Uses the WinRT toast API (reliable on Win10/11, no module install).
+
+  The Approve/Deny buttons no longer open a browser tab. On startup the listener
+  registers a private 'claudenotify:' URI scheme (HKCU, no admin) that points at a
+  hidden VBScript shim; clicking a button silently records the decision via /decide
+  and brings your active SSH session window (VS Code or Windows Terminal) to focus.
+
+  Usage:
+    powershell -ExecutionPolicy Bypass -File claude-notify-listener.ps1
+    powershell -ExecutionPolicy Bypass -File claude-notify-listener.ps1 -Port 58737
+
+  -FocusProcess lets you change which window types are eligible for focus; the most
+  recently active one (highest in Z-order) wins. -Decide is used internally by the
+  toast buttons and should not be passed manually.
+
+  Binding to literal 127.0.0.1 needs no admin / urlacl. Stop with Ctrl+C.
+#>
+param(
+    [int]$Port = 58737,
+    [string[]]$FocusProcess = @('Code', 'WindowsTerminal', 'OpenConsole', 'conhost', 'WindowsTerminalPreview', 'putty', 'mintty'),
+    [string]$Decide
+)
+
+$AppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+$Scheme = 'claudenotify'
+
+# --- Win32 helper: focus the most-recently-active session window ---------------
+# Enumerates top-level windows front-to-back (Z-order) and activates the first one
+# owned by a process in $FocusProcess. The AttachThreadInput dance is the standard
+# workaround for Windows' foreground-lock restriction; it is best-effort -- in some
+# states Windows will only flash the taskbar button instead of raising the window.
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+public class SessionFocus {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int idx);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int n);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool f);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+    const uint GW_OWNER = 4;
+    const int GWL_EXSTYLE = -20;
+    const int WS_EX_TOOLWINDOW = 0x80;
+    const int SW_RESTORE = 9;
+
+    static bool IsAltTab(IntPtr h) {
+        if (!IsWindowVisible(h)) return false;
+        if (GetWindow(h, GW_OWNER) != IntPtr.Zero) return false;
+        if (GetWindowTextLength(h) == 0) return false;
+        int ex = GetWindowLong(h, GWL_EXSTYLE);
+        if ((ex & WS_EX_TOOLWINDOW) != 0) return false;
+        return true;
+    }
+
+    public static bool Activate(string[] names) {
+        var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) => {
+            if (!IsAltTab(h)) return true;          // keep scanning
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            try {
+                var p = Process.GetProcessById((int)pid);
+                if (set.Contains(p.ProcessName)) { found = h; return false; }  // first = topmost in Z-order
+            } catch { }
+            return true;
+        }, IntPtr.Zero);
+
+        if (found == IntPtr.Zero) return false;
+
+        IntPtr fg = GetForegroundWindow();
+        uint fgPid;
+        uint fgThread = GetWindowThreadProcessId(fg, out fgPid);
+        uint thisThread = GetCurrentThreadId();
+        AttachThreadInput(fgThread, thisThread, true);
+        if (IsIconic(found)) ShowWindow(found, SW_RESTORE);
+        BringWindowToTop(found);
+        SetForegroundWindow(found);
+        AttachThreadInput(fgThread, thisThread, false);
+        return true;
+    }
+}
+"@ | Out-Null
+
+# --- Decide mode: invoked by the toast button via the claudenotify: scheme -----
+# Records the decision through the local listener, then raises the session window.
+if ($Decide) {
+    try {
+        $id = if ($Decide -match 'id=([^&]+)')      { $matches[1] } else { '' }
+        $v  = if ($Decide -match 'v=(allow|deny)')  { $matches[1] } else { '' }
+        $p  = if ($Decide -match 'port=(\d+)')      { $matches[1] } else { $Port }
+        if ($id -and $v) {
+            try { Invoke-RestMethod -Uri "http://127.0.0.1:$p/decide?id=$id&v=$v" -TimeoutSec 3 | Out-Null } catch { }
+        }
+        [SessionFocus]::Activate($FocusProcess) | Out-Null
+    } catch { }
+    return
+}
+
+# --- One-time registration of the private URI scheme (HKCU, no admin) ----------
+function Register-Scheme {
+    param([int]$Port, [string[]]$FocusProcess)
+    $script = $PSCommandPath
+    $vbs    = Join-Path $PSScriptRoot 'claude-decide.vbs'
+    $focus  = ($FocusProcess -join ',')
+
+    # Hidden launcher: window style 0 = no console flash, no taskbar blink.
+    $vbsBody = @'
+Set sh = CreateObject("WScript.Shell")
+If WScript.Arguments.Count > 0 Then
+  sh.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""<SCRIPT>"" -Port <PORT> -FocusProcess <FOCUS> -Decide """ & WScript.Arguments(0) & """", 0, False
+End If
+'@
+    $vbsBody = $vbsBody -replace '<SCRIPT>', $script -replace '<PORT>', $Port -replace '<FOCUS>', $focus
+    Set-Content -Path $vbs -Value $vbsBody -Encoding ASCII
+
+    $base = "HKCU:\Software\Classes\$Scheme"
+    New-Item -Path "$base\shell\open\command" -Force | Out-Null
+    Set-ItemProperty -Path $base -Name '(default)'    -Value "URL:Claude Notify Protocol"
+    Set-ItemProperty -Path $base -Name 'URL Protocol' -Value ''
+    Set-ItemProperty -Path "$base\shell\open\command" -Name '(default)' -Value ("wscript.exe `"$vbs`" `"%1`"")
+}
+try { Register-Scheme -Port $Port -FocusProcess $FocusProcess }
+catch { Write-Host "WARN: could not register '$Scheme' scheme: $($_.Exception.Message)" }
+
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument,                  Windows.Data.Xml.Dom,    ContentType = WindowsRuntime] | Out-Null
+
+$script:decisions = @{}
+
+function Esc([string]$s) { [System.Security.SecurityElement]::Escape($s) }
+
+function Show-Toast {
+    param([string]$Message)
+    # Clicking the toast body focuses the session (no decision to record).
+    $focusUrl = "${Scheme}:focus"
+    $xml = @"
+<toast launch="$(Esc $focusUrl)" activationType="protocol"><visual><binding template="ToastGeneric"><text>Claude Code</text><text>$(Esc $Message)</text></binding></visual></toast>
+"@
+    $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
+    $doc.LoadXml($xml)
+    $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($toast)
+}
+
+function Show-PromptToast {
+    param([string]$Id, [string]$Message, [int]$Port)
+    # Custom scheme instead of http:// -> no browser tab, no focus theft.
+    $allowUrl = "${Scheme}:decide?id=$Id&v=allow&port=$Port"
+    $denyUrl  = "${Scheme}:decide?id=$Id&v=deny&port=$Port"
+    $xml = @"
+<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>Claude Code needs permission</text><text>$(Esc $Message)</text></binding></visual><actions><action content="Approve" activationType="protocol" arguments="$(Esc $allowUrl)"/><action content="Deny" activationType="protocol" arguments="$(Esc $denyUrl)"/></actions></toast>
+"@
+    $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
+    $doc.LoadXml($xml)
+    $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($toast)
+}
+
+$listener = [System.Net.HttpListener]::new()
+$listener.Prefixes.Add("http://127.0.0.1:$Port/")
+$listener.Start()
+Write-Host "Claude notify listener on http://127.0.0.1:$Port/  (Ctrl+C to stop)"
+Write-Host "Approve/Deny will focus: $($FocusProcess -join ', ')"
+
+function Send-Text {
+    param($Context, [string]$Body, [string]$ContentType = "text/plain")
+    $buf = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    $Context.Response.ContentType = $ContentType
+    $Context.Response.ContentLength64 = $buf.Length
+    $Context.Response.OutputStream.Write($buf, 0, $buf.Length)
+    $Context.Response.OutputStream.Close()
+}
+
+try {
+    while ($listener.IsListening) {
+        $ctx    = $listener.GetContext()
+        $req    = $ctx.Request
+        $path   = $req.Url.AbsolutePath
+        $method = $req.HttpMethod
+
+        switch -Wildcard ("$method $path") {
+
+            "POST /notify" {
+                $reader = [System.IO.StreamReader]::new($req.InputStream, $req.ContentEncoding)
+                $msg = $reader.ReadToEnd(); $reader.Close()
+                if ([string]::IsNullOrWhiteSpace($msg)) { $msg = "Claude Code needs your attention" }
+                Write-Host ("[{0}] notify: {1}" -f (Get-Date -Format HH:mm:ss), $msg)
+                Show-Toast -Message $msg
+                Send-Text $ctx "ok"
+            }
+
+            "POST /prompt" {
+                $reader = [System.IO.StreamReader]::new($req.InputStream, $req.ContentEncoding)
+                $raw = $reader.ReadToEnd(); $reader.Close()
+                $obj = $raw | ConvertFrom-Json
+                $id  = $obj.id; $msg = $obj.message
+                $script:decisions[$id] = "pending"
+                Write-Host ("[{0}] prompt {1}: {2}" -f (Get-Date -Format HH:mm:ss), $id, $msg)
+                Show-PromptToast -Id $id -Message $msg -Port $Port
+                Send-Text $ctx "ok"
+            }
+
+            "GET /decide" {
+                $id = $req.QueryString["id"]; $v = $req.QueryString["v"]
+                if ($id -and ($v -eq "allow" -or $v -eq "deny")) {
+                    $script:decisions[$id] = $v
+                    Write-Host ("[{0}] decide {1}: {2}" -f (Get-Date -Format HH:mm:ss), $id, $v)
+                }
+                Send-Text $ctx "ok"
+            }
+
+            "GET /decision" {
+                $id = $req.QueryString["id"]
+                $val = "pending"
+                if ($id -and $script:decisions.ContainsKey($id)) { $val = $script:decisions[$id] }
+                Send-Text $ctx $val
+            }
+
+            default { $ctx.Response.StatusCode = 404; Send-Text $ctx "not found" }
+        }
+    }
+}
+finally {
+    $listener.Stop()
+}

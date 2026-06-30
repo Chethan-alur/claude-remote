@@ -75,10 +75,10 @@ Test: Lock phone. From laptop, ask Claude to run a Bash command. Phone wakes wit
 
 Items that emerged from the design discussion about a configurable Windows/Android remote control over WireGuard. See `CLAUDE.md` for the architecture.
 
-Configurable backend switch (`windows` | `android`, one active at a time):
-- [x] `install-hooks.sh` switches the permission/notification backend to the daemon (registers `PermissionRequest`/`Notification`/`Stop` → `claude-remote-hook`, replacing prior handlers)
-- [ ] A single `REMOTE_BACKEND` / `CLAUDE_NOTIFY_HOST` config knob read by the two existing shell hooks (`permission-approve-bridge.sh`, `notify-remote-bridge.sh`) so the Windows-toast path can be re-selected without hand-editing
-- [ ] A one-command toggle between the Windows and Android backends
+Unified multi-client fan-out (supersedes the old "one backend at a time" switch):
+- [x] `install-hooks.sh` makes the daemon the single permission/notification backend (registers `PermissionRequest`/`Notification`/`Stop` → `claude-remote-hook`, replacing prior handlers)
+- [x] The daemon broadcasts each permission request to **all** connected clients (Android app + Windows toast app), first-responder-wins, with a `permission_resolved` dismiss for the others; no client connected or wait expired → pass through to the local prompt
+- [x] The Windows toast app is now a WebSocket client of the daemon (`clients/windows/claude-notify-listener.ps1`); the old `.sh` bridges are retired to `clients/windows/legacy/`. No backend toggle is needed — both clients run at once.
 
 Hook isolation:
 - [x] Daemon-spawned sessions correlate via `CLAUDE_REMOTE_SESSION`; non-daemon `claude` sessions pass through untouched (no `--settings`/config-dir juggling needed)

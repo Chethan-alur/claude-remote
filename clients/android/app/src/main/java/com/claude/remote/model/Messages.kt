@@ -49,8 +49,16 @@ data class DeleteSession(val cwd: String, val id: String) : Message
 data class KillSession(val id: String) : Message
 
 @Serializable
+@SerialName("take_over")
+data class TakeOver(val id: String) : Message
+
+@Serializable
 @SerialName("check_path")
 data class CheckPath(val path: String) : Message
+
+@Serializable
+@SerialName("list_dir")
+data class ListDir(val path: String) : Message
 
 @Serializable
 @SerialName("set_handoff")
@@ -122,6 +130,14 @@ data class PathChecked(
 ) : Message
 
 @Serializable
+@SerialName("dir_listing")
+data class DirListing(
+    val path: String,
+    val parent: String, // "" when `path` is a filesystem root (no "up")
+    val entries: List<String> = emptyList(), // immediate sub-directory names, sorted
+) : Message
+
+@Serializable
 @SerialName("session_created")
 data class SessionCreated(
     val id: String,
@@ -161,6 +177,14 @@ data class PermissionRequest(
     val input: JsonElement,
     val summary: String,
     @SerialName("received_at") val receivedAt: Long,
+) : Message
+
+@Serializable
+@SerialName("permission_resolved")
+data class PermissionResolved(
+    val id: String,
+    val reason: String, // answered | expired
+    val decision: String = "", // winning decision when reason == "answered"
 ) : Message
 
 @Serializable

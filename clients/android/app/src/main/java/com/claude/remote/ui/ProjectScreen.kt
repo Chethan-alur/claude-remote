@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -47,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.claude.remote.data.ProjectConfig
+import com.claude.remote.data.newId
 import com.claude.remote.model.ProjectSessionInfo
 import com.claude.remote.net.WsClient
 import com.claude.remote.ui.components.EmptyState
@@ -66,11 +69,16 @@ fun ProjectScreen(
     onResume: (ProjectSessionInfo, cwd: String) -> Unit,
     onStartNew: (cwd: String) -> Unit,
     onDelete: (ProjectSessionInfo, cwd: String) -> Unit,
+    onBrowse: (cwd: String) -> Unit,
+    onSaveProject: (ProjectConfig) -> Unit,
     onBack: () -> Unit,
 ) {
-    var cwd by rememberSaveable { mutableStateOf(initialCwd) }
+    // Re-seed when initialCwd changes, so returning from the folder browser with
+    // a freshly-picked path updates the field.
+    var cwd by rememberSaveable(initialCwd) { mutableStateOf(initialCwd) }
     var loading by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<ProjectSessionInfo?>(null) }
+    var showSave by remember { mutableStateOf(false) }
     val trimmed = cwd.trim()
     val connected = connState == WsClient.ConnState.Connected
     val valid = trimmed.isNotEmpty() && connected
@@ -85,6 +93,11 @@ fun ProjectScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { showSave = true }, enabled = trimmed.isNotEmpty()) {
+                        Text("Save as project")
                     }
                 },
             )
@@ -124,6 +137,15 @@ fun ProjectScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedButton(
+                onClick = { onBrowse(trimmed) },
+                enabled = connected,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Filled.FolderOpen, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Browse folders")
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -162,6 +184,19 @@ fun ProjectScreen(
                 }
             }
         }
+    }
+
+    if (showSave) {
+        // Default the name to the folder's basename; the user can rename before saving.
+        ProjectEditDialog(
+            initial = ProjectConfig(
+                id = newId(),
+                name = trimmed.trimEnd('/').substringAfterLast('/'),
+                path = trimmed,
+            ),
+            onSave = { onSaveProject(it); showSave = false },
+            onDismiss = { showSave = false },
+        )
     }
 
     pendingDelete?.let { s ->

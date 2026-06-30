@@ -11,7 +11,7 @@ The architecture, wire protocol, and class shapes are fully designed in the docs
 - `daemon/claude_remote_daemon/session.py` — `SessionManager.create()` spawns the session command in a PTY, pumps output via `loop.add_reader`, and finalises on exit via a watchdog. Subscribers carry encoded protocol frames; `broadcast()` fans them out, `append_output()` wraps PTY bytes into `Output` frames, and the byte ring buffer backs `replay()`.
 - `daemon/claude_remote_daemon/server.py` — `_dispatch` implements `SessionCreate` (spawn → `SessionCreated` → auto-attach), `SessionAttach` (subscribe + optional replay + per-client forward task with disconnect cleanup), and `Input`. Auth is still a dev passthrough.
 - `daemon/claude_remote_daemon/main.py` — `run()` wires `AuthStore` + `SessionManager` + `HookBridge` + `WsServer` + `Discovery` and races them against a signal-driven stop. A `--claude-cmd` / `CLAUDE_REMOTE_CLAUDE_CMD` override lets tests spawn a fake process instead of `claude`.
-- `daemon/claude_remote_daemon/hooks.py` — `HookBridge` handles the Unix-socket protocol: it parses the framed payload (session-id line + hook JSON), routes `PermissionRequest`/`PreToolUse` to a `PermissionRequest` frame (registers a Future, broadcasts to subscribers, awaits the phone's decision with a 5-min auto-deny timeout), and `Notification`/`Stop` to `Notification` frames. `resolve()` completes the Future; per-session allow/deny-always preferences short-circuit repeats. Decisions map to the **Claude Code 2.1.x** schema (`hookSpecificOutput.decision.behavior` for `PermissionRequest`). Hook isolation is by session correlation: only requests whose `CLAUDE_REMOTE_SESSION` matches a daemon-spawned session are acted on; everything else passes through (`{"continue": true}`).
+- `daemon/claude_remote_daemon/hooks.py` — `HookBridge` handles the Unix-socket protocol: it parses the framed payload (session-id line + hook JSON), routes `PermissionRequest`/`PreToolUse` to a `PermissionRequest` frame (registers a Future, broadcasts daemon-wide to **all** connected clients, awaits the first decision), and `Notification`/`Stop` to `Notification` frames. **Multi-client fan-out + local fallback:** if no client is connected (`HookBridge.has_clients`) the request passes through to Claude's local prompt immediately; otherwise it waits `client_wait` seconds (`--permission-wait`, default 30) and, on timeout, broadcasts `permission_resolved{expired}` and passes through (it does **not** auto-deny). `resolve()` completes the Future on the **first** response (first-responder-wins) and broadcasts `permission_resolved{answered}` so other clients dismiss; per-session allow/deny-always preferences short-circuit repeats. Decisions map to the **Claude Code 2.1.x** schema (`hookSpecificOutput.decision.behavior` for `PermissionRequest`). Hook isolation is by session correlation: only requests whose `CLAUDE_REMOTE_SESSION` matches a daemon-spawned session are acted on; everything else passes through (`{"continue": true}`).
 - `daemon/tests/` — protocol round-trips, an end-to-end WebSocket smoke test (`create → output → input`), and hook-bridge tests (allow/deny/always, timeout, passthrough, notification) driven through an in-memory reader to avoid the sandbox's Unix-socket restriction. Run with `.venv/bin/python -m pytest`.
 - `scripts/install-hooks.sh` — registers `PermissionRequest` + `Notification` + `Stop` (matching 2.1.x) at `claude-remote-hook`; jq's `*` merge replaces those event arrays, so running it switches the active backend to the daemon.
 - Android `SessionService` / `MainActivity` / `SessionsScreen` / `TerminalScreen` — observable session state, navigation, New Session dialog, terminal output rendering, and prompt send (the "full control" vertical slice).
@@ -50,9 +50,9 @@ The wire protocol is defined in **three places that must be kept in lockstep**. 
 
 1. `protocol/messages.md` — the authoritative spec (prose + JSON examples).
 2. `daemon/claude_remote_daemon/protocol.py` — Python dataclasses + `encode`/`decode` (registry keyed on the `type` field).
-3. `android/app/src/main/java/com/claude/remote/model/Messages.kt` — Kotlin `@Serializable` sealed interface with `@JsonClassDiscriminator("type")`.
+3. `clients/android/app/src/main/java/com/claude/remote/model/Messages.kt` — Kotlin `@Serializable` sealed interface with `@JsonClassDiscriminator("type")`.
 
-Message types: `hello`, `welcome`, `session_create`, `session_created`, `session_attach`, `input`, `output`, `permission_request`, `permission_response`, `notification`, `set_handoff`, `handoff_state`, `ping`/`pong`, `error`. Pairing is **out of band** over HTTP (`POST /pair`), not part of the WebSocket protocol.
+Message types: `hello`, `welcome`, `session_create`, `session_created`, `session_attach`, `input`, `output`, `permission_request`, `permission_response`, `permission_resolved`, `notification`, `set_handoff`, `handoff_state`, `ping`/`pong`, `error`. Pairing is **out of band** over HTTP (`POST /pair`), not part of the WebSocket protocol.
 
 Session status values: `running`, `waiting` (permission pending), `idle` (Claude finished its turn), `dead`. Permission decisions: `allow`, `deny`, `allow_always`, `deny_always` (the `*_always` variants store a per-session preference keyed on tool + input shape). `SessionInfo.origin` is `spawned` (daemon-launched) or `adopted` (external — see handoff below).
 
@@ -90,7 +90,20 @@ sudo ln -sf "$(pwd)/daemon/.venv/bin/claude-remote-hook" /usr/local/bin/claude-r
 ./scripts/install-hooks.sh
 ```
 
-Note: `install-hooks.sh` contains a stale error message referring to a Go build (`go build -o claude-remote-hook`). The hook is Python, installed via `pip install -e .`; ignore the Go reference.
+For reference, `install-hooks.sh` merges this into `~/.claude/settings.json` (one `command` per event, all pointing at the hook CLI):
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/local/bin/claude-remote-hook" }] }],
+    "Notification":  [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/claude-remote-hook" }] }],
+    "Stop":          [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/claude-remote-hook" }] }],
+    "SessionStart":  [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/claude-remote-hook" }] }],
+    "SessionEnd":    [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/claude-remote-hook" }] }]
+  }
+}
+```
+
 
 ### Testing the daemon without the app
 
@@ -108,7 +121,7 @@ echo '{"event":"PreToolUse","tool_name":"Bash"}' | CLAUDE_REMOTE_SESSION=sess_te
 ## Android — commands
 
 ```bash
-cd android
+cd clients/android
 ./gradlew installDebug      # build + install on connected device/emulator
 ./gradlew assembleDebug     # build APK only
 ./gradlew lint
@@ -116,12 +129,22 @@ cd android
 
 The emulator reaches the daemon on the host at `10.0.2.2:8765` (set as `DEFAULT_DAEMON_HOST` in the debug build config). Gradle 9, `compileSdk`/`targetSdk` 34, `minSdk` 28, JVM target 17. Stack: Jetpack Compose (Material3), `kotlinx.serialization`, `OkHttp` WebSocket, `NsdManager` for mDNS — no DI framework, no Rx; do not introduce one.
 
+## Clients layout
+
+Both clients live under `clients/`:
+- `clients/android/` — the Kotlin/Compose app (moved here from the old top-level `android/`).
+- `clients/windows/` — `claude-notify-listener.ps1`, a PowerShell WebSocket client that shows native WinRT toasts and answers permission requests; `clients/windows/legacy/` holds the retired HTTP-over-SSH-tunnel bridges for reference only. See `clients/windows/README.md`. It is verified manually on Windows (cannot run from the Linux daemon's CI). Run with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 -DaemonUrl ws://127.0.0.1:8765 -Token <device-token>
+```
+
 ## Daemon architecture notes
 
 - **asyncio + `loop.add_reader(proc.fd, ...)`** for PTY reads — Linux/WSL only, which is intentional for the POC. Do not switch to thread-pool reads unless the user explicitly asks for Windows-native support. `ptyprocess` is the chosen PTY library; do not replace it with `pexpect` or `pty.fork()`.
 - One `Session` owns one `ptyprocess.PtyProcess` running `claude`, plus a bounded ~1 MB output ring buffer (`deque`) for reconnect replay, a list of subscriber `asyncio.Queue`s (drop on slow consumers rather than block the PTY pump), and a `pending_perms` dict of request-id → `Future`.
 - The session id is passed to the spawned `claude` via the `CLAUDE_REMOTE_SESSION` env var; the hook CLI reads it and prepends it as a header line so the daemon can correlate the hook payload to a session without parsing every payload variant.
-- The hook bridge **fails open**: any error or unreachable daemon yields `{"decision":"approve"}` so a daemon crash never bricks Claude Code. Permission requests time out after 5 minutes (`PERMISSION_TIMEOUT_SEC`) and auto-deny.
+- The hook bridge **fails open**: any error or unreachable daemon yields `{"decision":"approve"}` so a daemon crash never bricks Claude Code. With the daemon up, a permission request with **no connected client** passes through to the local prompt immediately; with clients connected it waits `client_wait` seconds (default 30) and, on timeout, **passes through to the local prompt** (it no longer auto-denies). Dead clients are evicted by the WebSocket heartbeat (`ping_interval`/`ping_timeout`) and on failed send.
 - State (device tokens) lives at `~/.claude-remote/devices.json`; the hook Unix socket defaults to `/tmp/claude-remote.sock`.
 
 ## Constraints the user has set (from docs/FOR_CLAUDE_CODE.md)

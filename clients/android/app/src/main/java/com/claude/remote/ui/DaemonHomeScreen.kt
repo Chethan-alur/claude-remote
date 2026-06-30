@@ -86,6 +86,7 @@ fun DaemonHomeScreen(
     onOpenSession: (SessionInfo) -> Unit,
     onRenameSession: (id: String, name: String) -> Unit,
     onKillSession: (id: String) -> Unit,
+    onTakeOverSession: (id: String) -> Unit,
     onClearDead: () -> Unit,
     onSwitchDaemon: () -> Unit,
     onReconnect: () -> Unit,
@@ -173,7 +174,7 @@ fun DaemonHomeScreen(
                 TextButton(onClick = onBrowsePath) {
                     Icon(Icons.Filled.FolderOpen, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Browse a path manually…")
+                    Text("Browse folders…")
                 }
             }
 
@@ -207,6 +208,7 @@ fun DaemonHomeScreen(
                     onOpen = { onOpenSession(s) },
                     onRename = { renaming = s },
                     onKill = { onKillSession(s.id) },
+                    onTakeOver = { onTakeOverSession(s.id) },
                 )
             }
         }
@@ -331,9 +333,12 @@ private fun SessionCard(
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onKill: () -> Unit,
+    onTakeOver: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var confirmTakeOver by remember { mutableStateOf(false) }
     val dead = session.status == "dead"
+    val adopted = session.origin == "adopted"
     Card(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 4.dp, bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -359,6 +364,12 @@ private fun SessionCard(
                             text = { Text("Rename") },
                             onClick = { menu = false; onRename() },
                         )
+                        if (adopted && !dead) {
+                            DropdownMenuItem(
+                                text = { Text("Take over") },
+                                onClick = { menu = false; confirmTakeOver = true },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(if (dead) "Remove" else "Kill session") },
                             onClick = { menu = false; onKill() },
@@ -382,6 +393,28 @@ private fun SessionCard(
                 )
             }
         }
+    }
+
+    if (confirmTakeOver) {
+        AlertDialog(
+            onDismissRequest = { confirmTakeOver = false },
+            title = { Text("Take over session?") },
+            text = {
+                Text(
+                    "This ends the desktop (e.g. VS Code) session for this " +
+                        "conversation and resumes it here so you can drive it from " +
+                        "the app. Unsaved state in the desktop session is lost.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmTakeOver = false; onTakeOver() }) {
+                    Text("Take over")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmTakeOver = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

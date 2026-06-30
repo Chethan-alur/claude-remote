@@ -128,6 +128,7 @@ private fun AppRoot(service: SessionService) {
     val connections by service.connections.collectAsState()
     val uploadedPath by service.uploadedPath.collectAsState()
     val pathChecks by service.pathChecks.collectAsState()
+    val dirListing by service.dirListing.collectAsState()
     val handoffEnabled by service.handoffEnabled.collectAsState()
 
     // Surface daemon errors (e.g. bad cwd, session_creation_failed) as a toast.
@@ -143,6 +144,9 @@ private fun AppRoot(service: SessionService) {
     // (or no active daemon) -> connections list; else the active daemon's home.
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     var browseCwd by rememberSaveable { mutableStateOf<String?>(null) }
+    // Non-null while the folder browser is open; its value is the path to start at
+    // ("" = the daemon's home directory).
+    var dirBrowseStart by rememberSaveable { mutableStateOf<String?>(null) }
     var onConnections by rememberSaveable { mutableStateOf(true) }
 
     // When a session is created or resumed, jump straight to its terminal.
@@ -189,6 +193,22 @@ private fun AppRoot(service: SessionService) {
             )
         }
 
+        dirBrowseStart != null -> {
+            BackHandler { dirBrowseStart = null }
+            DirBrowserScreen(
+                initialPath = dirBrowseStart ?: "",
+                listing = dirListing,
+                connState = connState,
+                onNavigate = { service.requestDir(it) },
+                onUseFolder = { path ->
+                    // Land on the project screen for the chosen folder.
+                    browseCwd = path
+                    dirBrowseStart = null
+                },
+                onBack = { dirBrowseStart = null },
+            )
+        }
+
         browseCwd != null -> {
             BackHandler { browseCwd = null }
             ProjectScreen(
@@ -203,6 +223,8 @@ private fun AppRoot(service: SessionService) {
                     service.createSession(cwd.substringAfterLast('/').ifBlank { "session" }, cwd)
                 },
                 onDelete = { s, cwd -> service.deleteProjectSession(cwd, s.id) },
+                onBrowse = { cwd -> dirBrowseStart = cwd },
+                onSaveProject = { active?.let { d -> service.saveProject(d.id, it) } },
                 onBack = { browseCwd = null },
             )
         }
@@ -233,12 +255,13 @@ private fun AppRoot(service: SessionService) {
                 onNewSession = { service.createSession(it.name, it.path) },
                 onTogglePin = { service.saveProject(daemon.id, it.copy(pinned = !it.pinned)) },
                 onCheckPath = { service.checkPath(it) },
-                onBrowsePath = { browseCwd = "" },
+                onBrowsePath = { dirBrowseStart = "" },
                 onSaveProject = { service.saveProject(daemon.id, it) },
                 onDeleteProject = { service.deleteProject(daemon.id, it) },
                 onOpenSession = { openId = it.id },
                 onRenameSession = { id, name -> service.renameSession(id, name) },
                 onKillSession = { service.killSession(it) },
+                onTakeOverSession = { service.takeOver(it) },
                 onClearDead = { service.clearDeadSessions() },
                 onSwitchDaemon = { onConnections = true },
                 onReconnect = { service.reconnectNow() },

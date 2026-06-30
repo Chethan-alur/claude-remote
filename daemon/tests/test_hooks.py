@@ -11,7 +11,12 @@ import json
 from pathlib import Path
 
 from claude_remote_daemon.hooks import HookBridge
-from claude_remote_daemon.protocol import Notification, PermissionRequest, decode
+from claude_remote_daemon.protocol import (
+    Notification,
+    PermissionRequest,
+    PermissionResolved,
+    decode,
+)
 from claude_remote_daemon.session import Session, SessionManager, Status
 
 
@@ -111,6 +116,8 @@ async def test_allow_always_is_remembered():
     await asyncio.wait_for(t1, 2)
     assert w1.response()["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     assert session.perm_prefs  # a preference was stored
+    # Answering broadcasts a dismissal for the other clients; drain it.
+    assert isinstance(decode(await asyncio.wait_for(q.get(), 2)), PermissionResolved)
 
     # Second identical call: auto-allowed, no new prompt broadcast.
     w2 = FakeWriter()
@@ -119,6 +126,66 @@ async def test_allow_always_is_remembered():
     )
     assert w2.response()["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     assert q.empty()
+
+
+async def test_no_clients_passes_through_immediately():
+    """With the daemon up but no client connected, a permission request must not
+    block for the client-wait — it falls straight through to the local prompt."""
+    bridge, session, q = _bridge_with_session()
+    bridge.has_clients = lambda: False  # nobody listening
+    writer = FakeWriter()
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("sess_test", PERM_PAYLOAD)), writer), 2
+    )
+    assert writer.response() == {"continue": True}
+    assert q.empty()  # nothing was broadcast into the void
+    assert session.status != Status.WAITING
+
+
+async def test_resolve_broadcasts_permission_resolved():
+    """First responder wins; the daemon then tells the other clients to dismiss."""
+    bridge, session, q = _bridge_with_session()
+    bridge.has_clients = lambda: True
+    writer = FakeWriter()
+    task = asyncio.create_task(
+        bridge._handle(_reader(_frame("sess_test", PERM_PAYLOAD)), writer)
+    )
+    req = decode(await asyncio.wait_for(q.get(), 2))
+    assert isinstance(req, PermissionRequest)
+
+    bridge.resolve(req.id, "allow")
+    bridge.resolve(req.id, "deny")  # second response loses — must be a no-op
+    await asyncio.wait_for(task, 2)
+
+    assert writer.response()["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+    resolved = decode(await asyncio.wait_for(q.get(), 2))
+    assert isinstance(resolved, PermissionResolved)
+    assert resolved.id == req.id
+    assert resolved.reason == "answered"
+    assert resolved.decision == "allow"
+    assert q.empty()  # the losing response broadcast nothing
+
+
+async def test_wait_expiry_dismisses_and_passes_through():
+    """No client answers in time: dismiss the stale prompt and fall through to the
+    local prompt (NOT auto-deny)."""
+    bridge, session, q = _bridge_with_session()
+    bridge.has_clients = lambda: True
+    bridge.client_wait = 0.05  # expire almost immediately
+    writer = FakeWriter()
+    task = asyncio.create_task(
+        bridge._handle(_reader(_frame("sess_test", PERM_PAYLOAD)), writer)
+    )
+    req = decode(await asyncio.wait_for(q.get(), 2))
+    assert isinstance(req, PermissionRequest)
+
+    await asyncio.wait_for(task, 2)  # let the client-wait lapse with no answer
+    assert writer.response() == {"continue": True}  # passthrough, not deny
+    resolved = decode(await asyncio.wait_for(q.get(), 2))
+    assert isinstance(resolved, PermissionResolved)
+    assert resolved.id == req.id
+    assert resolved.reason == "expired"
+    assert session.status == Status.RUNNING
 
 
 async def test_unknown_session_passes_through():
@@ -160,6 +227,72 @@ async def test_permission_prompt_notification_is_skipped():
         bridge._handle(_reader(_frame("sess_test", payload)), writer), 2
     )
     assert q.empty()  # suppressed in favour of the PermissionRequest event
+
+
+# --- session takeover / resume ---
+
+def test_adopt_stores_cc_id_and_pid():
+    """The adopted record carries the conversation id and the external claude pid
+    (the inputs an Android takeover needs to resume and SIGTERM)."""
+    sessions = SessionManager()
+    s = sessions.adopt("cc-1", "/tmp/proj", pid=4242)
+    assert s.origin == "adopted"
+    assert s.cc_session_id == "cc-1"
+    assert s.claude_pid == 4242
+    # A repeat hook reuses the record and refreshes the pid.
+    s2 = sessions.adopt("cc-1", "/tmp/proj", pid=4243)
+    assert s2 is s and s.claude_pid == 4243
+    # spawned_by_cc_id only matches daemon-owned (spawned) sessions.
+    assert sessions.spawned_by_cc_id("cc-1") is None
+
+
+async def test_spawned_session_records_cc_id_from_payload():
+    """The daemon learns a spawned session's Claude Code conversation id from the
+    first hook payload, so a later desktop resume can be detected as a collision."""
+    bridge, session, _q = _bridge_with_session()
+    assert session.cc_session_id == ""
+    payload = {"hook_event_name": "SessionStart", "session_id": "cc-rec"}
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("sess_test", payload)), FakeWriter()), 2
+    )
+    assert session.cc_session_id == "cc-rec"
+
+
+async def test_desktop_resume_kills_daemon_owned_session():
+    """Direction B: an external `claude --resume` (empty env line, SessionStart)
+    of a conversation the daemon owns kills the daemon's copy — even with handoff
+    off — to avoid two processes writing one transcript."""
+    bridge, session, _q = _bridge_with_session()
+    session.cc_session_id = "cc-shared"
+    payload = {"hook_event_name": "SessionStart", "session_id": "cc-shared"}
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("", payload)), FakeWriter()), 2
+    )
+    assert bridge.sessions.get(session.id) is None  # daemon-owned copy killed
+
+
+async def test_daemon_owned_resume_does_not_self_collide():
+    """The daemon's own `claude --resume` carries the env session-id line, so it
+    is matched as its own spawned session and must never kill itself."""
+    bridge, session, _q = _bridge_with_session()
+    session.cc_session_id = "cc-self"
+    payload = {"hook_event_name": "SessionStart", "session_id": "cc-self"}
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("sess_test", payload)), FakeWriter()), 2
+    )
+    assert bridge.sessions.get(session.id) is session  # survived
+
+
+async def test_non_sessionstart_external_does_not_kill():
+    """A late hook (not SessionStart) from a dying desktop must not trip the
+    collision kill against a daemon-owned session with the same conversation id."""
+    bridge, session, _q = _bridge_with_session()
+    session.cc_session_id = "cc-late"
+    payload = {"hook_event_name": "SessionEnd", "session_id": "cc-late", "reason": "other"}
+    await asyncio.wait_for(
+        bridge._handle(_reader(_frame("", payload)), FakeWriter()), 2
+    )
+    assert bridge.sessions.get(session.id) is session  # survived
 
 
 # --- desktop->mobile handoff (adopting external sessions) ---

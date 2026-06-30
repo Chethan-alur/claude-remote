@@ -79,9 +79,46 @@
       if (window.AndroidInput && AndroidInput.send) AndroidInput.send(d);
     });
 
-    // Tapping the terminal focuses xterm's hidden textarea so the soft keyboard
-    // opens and key events flow through onData.
-    el.addEventListener('click', function () { term.focus(); });
+    // --- Touch scrolling -------------------------------------------------
+    // xterm.js converts the mouse wheel into scrollback scrolling but does NOT
+    // handle touch drags: the screen/canvas overlays the scrollable viewport
+    // and swallows the gesture, so on a phone the buffer cannot be scrolled at
+    // all. We translate a one-finger vertical drag into term.scrollLines()
+    // ourselves, and suppress the tap-to-focus that would otherwise fire when a
+    // drag ends.
+    var touchStartY = null, scrollAccum = 0, dragged = false;
+    function cellHeight() {
+      try {
+        var d = term._core._renderService.dimensions;
+        return (d && d.css && d.css.cell && d.css.cell.height) || 17;
+      } catch (e) { return 17; }
+    }
+    el.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) { touchStartY = null; return; }
+      touchStartY = e.touches[0].clientY;
+      scrollAccum = 0;
+      dragged = false;
+    }, { passive: true });
+    el.addEventListener('touchmove', function (e) {
+      if (touchStartY === null) return;
+      var y = e.touches[0].clientY;
+      // Finger moving down (positive delta) reveals older history (scroll up).
+      scrollAccum += y - touchStartY;
+      touchStartY = y;
+      var h = cellHeight();
+      var lines = Math.trunc(scrollAccum / h);
+      if (lines !== 0) {
+        scrollAccum -= lines * h;
+        term.scrollLines(-lines);
+        dragged = true;
+        e.preventDefault(); // stop the WebView treating the drag as a tap
+      }
+    }, { passive: false });
+    el.addEventListener('touchend', function () { touchStartY = null; });
+
+    // Tapping (not dragging) focuses xterm's hidden textarea so the soft
+    // keyboard opens and key events flow through onData.
+    el.addEventListener('click', function () { if (!dragged) term.focus(); });
 
     // Bridge API called from Android via evaluateJavascript:
     window.termWrite = function (s) { term.write(s); };
