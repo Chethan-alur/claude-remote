@@ -25,21 +25,21 @@
   Connectivity
   ------------
   The listener dials OUT to the daemon, so reach it by either:
-    - SSH LocalForward:  add `LocalForward 8765 127.0.0.1:8765` to the Windows
-      ~/.ssh/config host block, then use -DaemonUrl ws://127.0.0.1:8765
-    - LAN / WireGuard:   -DaemonUrl ws://<daemon-host-or-wg-ip>:8765
+    - SSH LocalForward:  add `LocalForward 8770 127.0.0.1:8770` to the Windows
+      ~/.ssh/config host block, then use -DaemonUrl ws://127.0.0.1:8770
+    - LAN / WireGuard:   -DaemonUrl ws://<daemon-host-or-wg-ip>:8770
 
   Usage
   -----
     powershell -ExecutionPolicy Bypass -File claude-notify-listener.ps1 `
-        -DaemonUrl ws://127.0.0.1:8765 -Token <paired-device-token>
+        -DaemonUrl ws://127.0.0.1:8770 -Token <paired-device-token>
 
   -FocusProcess lets you change which window types are eligible for focus; the
   most recently active one (highest in Z-order) wins. -Decide is used internally
   by the toast buttons and should not be passed manually.
 #>
 param(
-    [string]$DaemonUrl = $(if ($env:CLAUDE_REMOTE_DAEMON_URL) { $env:CLAUDE_REMOTE_DAEMON_URL } else { 'ws://127.0.0.1:8765' }),
+    [string]$DaemonUrl = $(if ($env:CLAUDE_REMOTE_DAEMON_URL) { $env:CLAUDE_REMOTE_DAEMON_URL } else { 'ws://127.0.0.1:8770' }),
     [string]$Token = $(if ($env:CLAUDE_REMOTE_TOKEN) { $env:CLAUDE_REMOTE_TOKEN } else { 'windows-toast' }),
     [int]$CallbackPort = 58737,
     [string[]]$FocusProcess = @('Code', 'WindowsTerminal', 'OpenConsole', 'conhost', 'WindowsTerminalPreview', 'putty', 'mintty'),

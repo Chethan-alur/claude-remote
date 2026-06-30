@@ -6,7 +6,7 @@ Every frame is a JSON object with a required `type` field. No envelope, no versi
 
 ## Connection lifecycle
 
-1. Phone opens WebSocket to `ws://<daemon-host>:8765/`
+1. Phone opens WebSocket to `ws://<daemon-host>:8770/`
 2. Phone sends `hello` with its device token
 3. Daemon replies with `welcome` listing existing sessions, or `error` if the token is unknown
 4. Phone sends `session_attach` for the session it wants, or `session_create` for a new one
@@ -335,7 +335,7 @@ folder yields an empty `entries` rather than an error, so navigation never dead-
 Pairing is not part of the WS protocol — it happens once over a separate HTTP endpoint.
 
 ```
-POST http://<daemon>:8765/pair
+POST http://<daemon>:8770/pair
 Body: { "code": "123456", "device_name": "Pixel 8" }
 Returns: { "token": "dev_a1b2c3d4..." }
 ```

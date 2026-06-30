@@ -29,8 +29,8 @@ Exact steps to get a runnable system in the target environment. For Android +
 daemon this usually means:
 
 - Where and how to run the daemon (Linux/WSL): `claude-remote-daemon -v`.
-- How the emulator reaches it (`10.0.2.2:8765`; with the daemon in WSL2,
-  `localhostForwarding` makes Windows `localhost:8765` reachable).
+- How the emulator reaches it (`10.0.2.2:8770`; with the daemon in WSL2,
+  `localhostForwarding` makes Windows `localhost:8770` reachable).
 - Build/install the app: `cd android && ./gradlew installDebug` (needs
   `JAVA_HOME`; Android Studio's bundled JBR works).
 

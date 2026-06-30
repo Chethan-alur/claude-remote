@@ -45,9 +45,9 @@ Stick to the four-day plan in `docs/IMPLEMENTATION_PLAN.md`. Each day produces s
 
 ## Test as you go
 
-- Use `websocat ws://localhost:8765` from the dev machine to manually drive the daemon before the Android app exists. Send hand-written JSON; observe responses.
+- Use `websocat ws://localhost:8770` from the dev machine to manually drive the daemon before the Android app exists. Send hand-written JSON; observe responses.
 - The hook script can be tested standalone: `echo '{"event":"PreToolUse","tool_name":"Bash"}' | CLAUDE_REMOTE_SESSION=sess_test claude-remote-hook`. With no daemon running it should fail-open and print `{"decision":"approve"}`.
-- For the Android app, use the Android Emulator with host networking — it can reach the daemon at `10.0.2.2:8765`.
+- For the Android app, use the Android Emulator with host networking — it can reach the daemon at `10.0.2.2:8770`.
 - Add `pytest` tests for `protocol.py` first — encode/decode round-trips for every message type. Cheapest possible regression net.
 
 ## Done state for the POC

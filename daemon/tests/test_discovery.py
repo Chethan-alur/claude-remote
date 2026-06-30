@@ -13,8 +13,8 @@ def test_local_ip_returns_an_address():
 
 
 def test_service_info_fields():
-    info = _build_service_info("claude-remote", 8765, ip="192.168.1.5")
+    info = _build_service_info("claude-remote", 8770, ip="192.168.1.5")
     assert info.type == SERVICE_TYPE
     assert info.name == f"claude-remote.{SERVICE_TYPE}"
-    assert info.port == 8765
+    assert info.port == 8770
     assert socket.inet_ntoa(info.addresses[0]) == "192.168.1.5"

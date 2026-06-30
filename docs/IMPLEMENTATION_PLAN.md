@@ -47,7 +47,7 @@ Goal: Open the app on a phone (or emulator), see live terminal output from the d
 
 Tasks:
 - [ ] Open `android/` in Android Studio; sync Gradle; run on emulator — **⚠ not done in this environment** (no Android SDK/Gradle here; the app must be built in Android Studio). A latent compile error in the scaffold was fixed: `SessionsScreen`/`TerminalScreen` now carry `@OptIn(ExperimentalMaterial3Api::class)`.
-- [~] `WsClient.kt` connects to `10.0.2.2:8765` and decodes `welcome` — code present and unchanged from scaffold; **⚠ unverified** on a device
+- [~] `WsClient.kt` connects to `10.0.2.2:8770` and decodes `welcome` — code present and unchanged from scaffold; **⚠ unverified** on a device
 - [x] `SessionService.kt` — connects on start, exposes observable state (`sessions`, `conn`, per-session `outputFor`) and actions (`createSession`/`attach`/`sendInput`); attaches when a session is opened
 - [x] `MainActivity.kt` + `SessionsScreen.kt` — populated from real `welcome.sessions`; navigation list ↔ terminal; "New session" dialog (name + cwd); connection-state indicator
 - [x] `TerminalScreen.kt` — scrolling monospace `Text` fed by the output buffer, auto-scroll, input field + Send wired to `Input` frames (xterm.js deferred as polish)

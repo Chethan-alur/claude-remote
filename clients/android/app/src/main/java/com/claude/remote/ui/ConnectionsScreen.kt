@@ -206,7 +206,7 @@ fun DaemonEditDialog(
 ) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var host by remember { mutableStateOf(initial?.host ?: "") }
-    var port by remember { mutableStateOf((initial?.port ?: 8765).toString()) }
+    var port by remember { mutableStateOf((initial?.port ?: 8770).toString()) }
     var token by remember { mutableStateOf(initial?.token ?: "dev_placeholder") }
     val portNum = port.toIntOrNull()
     val valid = name.isNotBlank() && host.isNotBlank() && portNum != null && portNum in 1..65535
@@ -252,7 +252,7 @@ fun DaemonEditDialog(
             TextButton(
                 enabled = valid,
                 onClick = {
-                    val base = initial ?: DaemonConfig(id = newId(), name = "", host = "", port = 8765)
+                    val base = initial ?: DaemonConfig(id = newId(), name = "", host = "", port = 8770)
                     onSave(
                         base.copy(
                             name = name.trim(),

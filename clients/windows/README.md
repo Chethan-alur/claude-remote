@@ -15,7 +15,7 @@ client dismisses its toast automatically.
 - Windows 10/11 with PowerShell 5.1+ (uses built-in `System.Net.WebSockets`).
 - The daemon running on the dev machine (Linux/WSL) with the hooks installed
   (`scripts/install-hooks.sh`).
-- A reachable daemon WebSocket port (default 8765) — see Connectivity.
+- A reachable daemon WebSocket port (default 8770) — see Connectivity.
 
 ## Connectivity
 
@@ -26,18 +26,18 @@ HTTP/SSH-reverse-tunnel design). Pick one:
   machine, add:
 
   ```
-  LocalForward 8765 127.0.0.1:8765
+  LocalForward 8770 127.0.0.1:8770
   ```
 
-  Then connect with `-DaemonUrl ws://127.0.0.1:8765`.
+  Then connect with `-DaemonUrl ws://127.0.0.1:8770`.
 
-- **LAN / WireGuard** — connect directly: `-DaemonUrl ws://<daemon-host-or-wg-ip>:8765`.
+- **LAN / WireGuard** — connect directly: `-DaemonUrl ws://<daemon-host-or-wg-ip>:8770`.
 
 ## Running
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 `
-    -DaemonUrl ws://127.0.0.1:8765 `
+    -DaemonUrl ws://127.0.0.1:8770 `
     -Token <paired-device-token>
 ```
 
@@ -45,7 +45,7 @@ Parameters (all optional; env-var fallbacks in parentheses):
 
 | Param           | Default                        | Meaning |
 | --------------- | ------------------------------ | ------- |
-| `-DaemonUrl`    | `ws://127.0.0.1:8765` (`CLAUDE_REMOTE_DAEMON_URL`) | Daemon WebSocket URL |
+| `-DaemonUrl`    | `ws://127.0.0.1:8770` (`CLAUDE_REMOTE_DAEMON_URL`) | Daemon WebSocket URL |
 | `-Token`        | `windows-toast` (`CLAUDE_REMOTE_TOKEN`) | Device token; only enforced when the daemon runs with `--require-auth` |
 | `-CallbackPort` | `58737`                        | Loopback port for the toast-button callback (see below) |
 | `-FocusProcess` | `Code, WindowsTerminal, …`     | Window types eligible to be raised when you click a toast |

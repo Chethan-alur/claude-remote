@@ -50,10 +50,10 @@ instead of hanging/auto-denying. See `docs/notification-flow.md` and
    `--permission-wait 30`). Re-run `scripts/install-hooks.sh` so
    `PermissionRequest/Notification/Stop/SessionStart/SessionEnd` point at the hook.
 2. **Android:** `cd clients/android && ./gradlew installDebug` (Android Studio's
-   bundled JBR works as `JAVA_HOME`). Emulator reaches the daemon at `10.0.2.2:8765`.
-3. **Windows toast:** reach the daemon via SSH `LocalForward 8765 127.0.0.1:8765`
+   bundled JBR works as `JAVA_HOME`). Emulator reaches the daemon at `10.0.2.2:8770`.
+3. **Windows toast:** reach the daemon via SSH `LocalForward 8770 127.0.0.1:8770`
    (or LAN/WireGuard), then run
-   `powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 -DaemonUrl ws://127.0.0.1:8765 -Token <token>`.
+   `powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 -DaemonUrl ws://127.0.0.1:8770 -Token <token>`.
    See `clients/windows/README.md`.
 
 ## Verification checklist

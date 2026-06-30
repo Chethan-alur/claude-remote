@@ -16,7 +16,7 @@ source .venv/bin/activate
 pip install -e .
 
 # Run
-claude-remote-daemon --port 8765
+claude-remote-daemon --port 8770
 ```
 
 ## Install the hook bridge

@@ -64,8 +64,8 @@ Android:
 
 1. Sync the repo to include the xterm changes (see *Code location* above).
 2. **Daemon (WSL/Linux):** from `daemon/`, `./scripts/setup-daemon.sh` if not
-   already set up, then `claude-remote-daemon -v --port 8765`. With the daemon in
-   WSL2, Windows `localhost:8765` reaches it (default `localhostForwarding`).
+   already set up, then `claude-remote-daemon -v --port 8770`. With the daemon in
+   WSL2, Windows `localhost:8770` reaches it (default `localhostForwarding`).
 3. **Emulator:** the debug build's `DEFAULT_DAEMON_HOST` is `10.0.2.2`, which is
    the Windows host loopback from inside the emulator → reaches the daemon.
 4. **Build/install:** `cd android && ./gradlew installDebug` (set `JAVA_HOME`;

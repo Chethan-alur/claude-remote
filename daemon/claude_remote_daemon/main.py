@@ -31,7 +31,7 @@ logger = logging.getLogger("claude_remote_daemon")
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="claude-remote-daemon")
-    p.add_argument("--port", type=int, default=8765, help="WebSocket port")
+    p.add_argument("--port", type=int, default=8770, help="WebSocket port")
     p.add_argument("--bind", default="0.0.0.0", help="Bind address")
     p.add_argument(
         "--hook-socket",

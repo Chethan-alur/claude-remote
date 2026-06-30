@@ -75,7 +75,7 @@ cd daemon && python3 -m venv .venv && source .venv/bin/activate && pip install -
 pip install -e '.[dev]'
 
 # Run the daemon (-v / -vv raise log verbosity)
-claude-remote-daemon -v --port 8765
+claude-remote-daemon -v --port 8770
 
 # Lint
 ruff check daemon/
@@ -109,7 +109,7 @@ For reference, `install-hooks.sh` merges this into `~/.claude/settings.json` (on
 
 ```bash
 # Drive the WebSocket by hand
-websocat ws://localhost:8765
+websocat ws://localhost:8770
 # then send: {"type":"hello","token":"x"}
 #            {"type":"session_create","name":"test","cwd":"/tmp"}
 #            {"type":"input","session":"sess_xxx","data":"hi\n"}
@@ -127,7 +127,7 @@ cd clients/android
 ./gradlew lint
 ```
 
-The emulator reaches the daemon on the host at `10.0.2.2:8765` (set as `DEFAULT_DAEMON_HOST` in the debug build config). Gradle 9, `compileSdk`/`targetSdk` 34, `minSdk` 28, JVM target 17. Stack: Jetpack Compose (Material3), `kotlinx.serialization`, `OkHttp` WebSocket, `NsdManager` for mDNS — no DI framework, no Rx; do not introduce one.
+The emulator reaches the daemon on the host at `10.0.2.2:8770` (set as `DEFAULT_DAEMON_HOST` in the debug build config). Gradle 9, `compileSdk`/`targetSdk` 34, `minSdk` 28, JVM target 17. Stack: Jetpack Compose (Material3), `kotlinx.serialization`, `OkHttp` WebSocket, `NsdManager` for mDNS — no DI framework, no Rx; do not introduce one.
 
 ## Clients layout
 
@@ -136,7 +136,7 @@ Both clients live under `clients/`:
 - `clients/windows/` — `claude-notify-listener.ps1`, a PowerShell WebSocket client that shows native WinRT toasts and answers permission requests; `clients/windows/legacy/` holds the retired HTTP-over-SSH-tunnel bridges for reference only. See `clients/windows/README.md`. It is verified manually on Windows (cannot run from the Linux daemon's CI). Run with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 -DaemonUrl ws://127.0.0.1:8765 -Token <device-token>
+powershell -ExecutionPolicy Bypass -File clients\windows\claude-notify-listener.ps1 -DaemonUrl ws://127.0.0.1:8770 -Token <device-token>
 ```
 
 ## Daemon architecture notes

@@ -66,7 +66,7 @@ All tunables live in `~/.config/claude-remote/daemon.env`, a plain
 | Key          | Default   | Meaning                                                        |
 |--------------|-----------|----------------------------------------------------------------|
 | `BIND`       | `0.0.0.0` | Interface the WebSocket server binds to. Use `127.0.0.1` to restrict the daemon to this machine (e.g. when reached only over a locally-terminated WireGuard tunnel). |
-| `PORT`       | `8765`    | WebSocket port. Must match the Android app and the mDNS advert. |
+| `PORT`       | `8770`    | WebSocket port. Must match the Android app and the mDNS advert. |
 | `EXTRA_ARGS` | `-v`      | Extra flags, split on whitespace. `-v`/`-vv` raise log verbosity; `--require-auth` rejects any device that has not paired. |
 
 After editing, restart the service:

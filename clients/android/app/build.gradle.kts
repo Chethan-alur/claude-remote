@@ -30,7 +30,7 @@ android {
         // Starting daemon address. It's user-editable in the app (Connections
         // screen), so this is just the prefilled default for the first daemon.
         buildConfigField("String", "DEFAULT_DAEMON_HOST", "\"10.0.2.2\"") // emulator host alias
-        buildConfigField("int", "DEFAULT_DAEMON_PORT", "8765")
+        buildConfigField("int", "DEFAULT_DAEMON_PORT", "8770")
     }
 
     signingConfigs {
