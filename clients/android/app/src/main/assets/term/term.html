@@ -6,7 +6,12 @@
   <link rel="stylesheet" href="xterm.css">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; width: 100%; background: #000; overflow: hidden; }
-    #term { height: 100%; width: 100%; }
+    /* Size against the viewport directly. A percentage-height chain
+       (html/body/#term all height:100%) collapses to 0 inside this WebView
+       — the page reports a real width but zero height — which starves xterm of
+       vertical space and renders the terminal blank. Fixed insets track the
+       viewport regardless of the parent height chain. */
+    #term { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
     .xterm { padding: 4px; }
     /* The terminal must never be wider than the screen; xterm is sized to fit. */
     .xterm-viewport { overflow-x: hidden !important; }
@@ -21,12 +26,15 @@
     // fit, resize xterm to that grid, and report it to the native side, which
     // tells the daemon to resize the PTY (SIGWINCH) so claude's TUI reflows to
     // the same width. cols/rows here are therefore dynamic, not fixed.
+
+    // Start at a sane fixed grid so the terminal always renders even if the
+    // fit-to-width measurement below is unavailable; fit() refines it once the
+    // renderer has measured a cell.
     var term = new Terminal({
-      // Generous scrollback so a long claude session's history stays scrollable
-      // on the phone. ~20k lines is cheap in memory and comfortably exceeds the
-      // daemon's ~1 MB reconnect-replay window.
+      cols: 80,
+      rows: 24,
       fontSize: 12,
-      scrollback: 20000,
+      scrollback: 50000,
       disableStdin: false,
       convertEol: false,
       theme: { background: '#000000' }
@@ -68,25 +76,6 @@
       if (window.AndroidInput && AndroidInput.resize) AndroidInput.resize(g.cols, g.rows);
     }
 
-    // Cell dimensions are only measurable after xterm's first render, which on
-    // a WebView lags behind load / the ResizeObserver's first callback — so the
-    // fit() calls below can all see null geometry and never report a size. Poll
-    // fit() until it succeeds (lastCols becomes non-zero) so the PTY is sized to
-    // the phone; otherwise claude renders at the default 80/120-col width and
-    // wraps into an unreadable mess.
-    var fitAttempts = 0;
-    function ensureFit() {
-      fit();
-      if (lastCols === 0 && fitAttempts < 50) {
-        fitAttempts++;
-        setTimeout(ensureFit, 100);
-      }
-    }
-
-    // The first render is the earliest reliable point the cell size exists;
-    // fit() there. onRender fires often, but fit() early-returns when unchanged.
-    term.onRender(function () { fit(); });
-
     // Refit whenever the WebView changes size (rotation, soft keyboard, the
     // control-key row toggling). ResizeObserver covers all of these.
     if (window.ResizeObserver) {
@@ -98,49 +87,18 @@
     // Forward everything the user types (incl. control/escape sequences) to the
     // native side, which relays it over the WebSocket as an `input` frame.
     term.onData(function (d) {
+      // Don't forward mouse-tracking reports. claude enables mouse modes, so
+      // xterm would emit SGR (ESC[<…M/m) or legacy (ESC[M…) mouse sequences on
+      // every tap — but on a touch screen a tap is meant to focus and raise the
+      // keyboard, not click inside claude's TUI. Swallow them; menus are driven
+      // by the on-screen arrow/Tab keys instead.
+      if (/^\x1b\[(<[0-9;]*[Mm]|M)/.test(d)) return;
       if (window.AndroidInput && AndroidInput.send) AndroidInput.send(d);
     });
 
-    // --- Touch scrolling -------------------------------------------------
-    // xterm.js converts the mouse wheel into scrollback scrolling but does NOT
-    // handle touch drags: the screen/canvas overlays the scrollable viewport
-    // and swallows the gesture, so on a phone the buffer cannot be scrolled at
-    // all. We translate a one-finger vertical drag into term.scrollLines()
-    // ourselves, and suppress the tap-to-focus that would otherwise fire when a
-    // drag ends.
-    var touchStartY = null, scrollAccum = 0, dragged = false;
-    function cellHeight() {
-      try {
-        var d = term._core._renderService.dimensions;
-        return (d && d.css && d.css.cell && d.css.cell.height) || 17;
-      } catch (e) { return 17; }
-    }
-    el.addEventListener('touchstart', function (e) {
-      if (e.touches.length !== 1) { touchStartY = null; return; }
-      touchStartY = e.touches[0].clientY;
-      scrollAccum = 0;
-      dragged = false;
-    }, { passive: true });
-    el.addEventListener('touchmove', function (e) {
-      if (touchStartY === null) return;
-      var y = e.touches[0].clientY;
-      // Finger moving down (positive delta) reveals older history (scroll up).
-      scrollAccum += y - touchStartY;
-      touchStartY = y;
-      var h = cellHeight();
-      var lines = Math.trunc(scrollAccum / h);
-      if (lines !== 0) {
-        scrollAccum -= lines * h;
-        term.scrollLines(-lines);
-        dragged = true;
-        e.preventDefault(); // stop the WebView treating the drag as a tap
-      }
-    }, { passive: false });
-    el.addEventListener('touchend', function () { touchStartY = null; });
-
-    // Tapping (not dragging) focuses xterm's hidden textarea so the soft
-    // keyboard opens and key events flow through onData.
-    el.addEventListener('click', function () { if (!dragged) term.focus(); });
+    // Tapping the terminal focuses xterm's hidden textarea so the soft keyboard
+    // opens and key events flow through onData.
+    el.addEventListener('click', function () { term.focus(); });
 
     // Bridge API called from Android via evaluateJavascript:
     window.termWrite = function (s) { term.write(s); };
@@ -150,11 +108,20 @@
     // Force a resize report even if the grid is unchanged — used when the same
     // WebView is reused for a different session, whose new PTY still defaults to
     // the daemon's spawn size and must be told this phone's dimensions.
-    window.termRefit = function () { lastCols = 0; lastRows = 0; fitAttempts = 0; ensureFit(); };
+    window.termRefit = function () { lastCols = 0; lastRows = 0; fit(); };
 
-    // Kick off the retry loop; onRender (above) also drives it once the first
-    // paint measures the cell size.
-    ensureFit();
+    // The renderer needs a tick to measure the cell size after open(), and the
+    // WebView can report zero height for the first frame or two. Keep fitting
+    // until the container has a real size (fit succeeds, so lastCols > 0), then
+    // stop; the ResizeObserver handles later rotations/keyboard changes.
+    var fitTries = 0;
+    function fitUntilSized() {
+      fit();
+      if (lastCols === 0 && fitTries++ < 120) {
+        requestAnimationFrame(fitUntilSized);
+      }
+    }
+    requestAnimationFrame(fitUntilSized);
     window.__termReady = true;
   </script>
 </body>
