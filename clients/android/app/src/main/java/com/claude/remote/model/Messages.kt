@@ -45,6 +45,14 @@ data class ListSessions(val cwd: String) : Message
 data class DeleteSession(val cwd: String, val id: String) : Message
 
 @Serializable
+@SerialName("get_history")
+data class GetHistory(
+    val session: String,
+    val cwd: String,
+    val limit: Int = 0,
+) : Message
+
+@Serializable
 @SerialName("kill_session")
 data class KillSession(val id: String) : Message
 
@@ -158,6 +166,20 @@ data class ProjectSessionInfo(
 data class ProjectSessions(
     val cwd: String,
     val sessions: List<ProjectSessionInfo>,
+) : Message
+
+@Serializable
+data class HistoryMessage(
+    val role: String, // user | assistant
+    val text: String,
+    val ts: Long = 0,
+)
+
+@Serializable
+@SerialName("history")
+data class History(
+    val session: String,
+    val messages: List<HistoryMessage> = emptyList(),
 ) : Message
 
 @Serializable

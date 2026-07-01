@@ -41,6 +41,14 @@ class DeleteSession:
 
 
 @dataclass
+class GetHistory:
+    session: str  # daemon session id whose conversation history to read
+    cwd: str  # project cwd (locates the on-disk transcript)
+    limit: int = 0  # keep only the last N messages (0 = all)
+    type: str = "get_history"
+
+
+@dataclass
 class SessionAttach:
     id: str
     replay_bytes: int = 0
@@ -186,6 +194,22 @@ class ProjectSessions:
 
 
 @dataclass
+class HistoryMessage:
+    role: str  # user | assistant
+    text: str
+    ts: int  # epoch seconds, 0 if unknown
+
+
+@dataclass
+class History:
+    """Conversation transcript for a session, oldest message first — the phone's
+    scrollable history view (Claude's TUI alt-screen keeps no scrollback)."""
+    session: str
+    messages: list[HistoryMessage] = field(default_factory=list)
+    type: str = "history"
+
+
+@dataclass
 class Output:
     session: str
     data: str
@@ -267,6 +291,7 @@ _TYPE_REGISTRY = {
     "session_attach": SessionAttach,
     "list_sessions": ListSessions,
     "delete_session": DeleteSession,
+    "get_history": GetHistory,
     "kill_session": KillSession,
     "take_over": TakeOver,
     "check_path": CheckPath,
@@ -283,6 +308,7 @@ _TYPE_REGISTRY = {
     "dir_listing": DirListing,
     "session_created": SessionCreated,
     "project_sessions": ProjectSessions,
+    "history": History,
     "output": Output,
     "permission_request": PermissionRequest,
     "permission_resolved": PermissionResolved,
@@ -316,4 +342,6 @@ def decode(raw: str) -> Any:
         payload["sessions"] = [SessionInfo(**s) for s in payload["sessions"]]
     if cls is ProjectSessions and "sessions" in payload:
         payload["sessions"] = [ProjectSessionInfo(**s) for s in payload["sessions"]]
+    if cls is History and "messages" in payload:
+        payload["messages"] = [HistoryMessage(**m) for m in payload["messages"]]
     return cls(**payload)

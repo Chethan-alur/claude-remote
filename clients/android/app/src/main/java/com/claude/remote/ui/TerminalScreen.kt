@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +96,7 @@ fun TerminalScreen(
     onBack: () -> Unit,
     onSendInput: (String) -> Unit,
     onResize: (cols: Int, rows: Int) -> Unit,
+    onShowHistory: () -> Unit = {},
     adopted: Boolean = false,
 ) {
     var draft by remember { mutableStateOf("") }
@@ -168,6 +170,12 @@ fun TerminalScreen(
                     val (dotColor, _) = connStateInfo(connState)
                     Box(Modifier.size(8.dp).clip(CircleShape).background(dotColor))
                     Spacer(Modifier.width(4.dp))
+                    // Scrollable conversation history — Claude's alt-screen TUI keeps
+                    // no terminal scrollback, so earlier turns are read from its
+                    // on-disk transcript instead.
+                    IconButton(onClick = onShowHistory) {
+                        Icon(Icons.Filled.History, contentDescription = "Conversation history")
+                    }
                     // Expand/collapse the control-key row (Esc/Tab/arrows/…).
                     // Collapsed by default to leave the most room for the terminal.
                     IconButton(onClick = { keysExpanded = !keysExpanded }) {

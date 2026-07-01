@@ -23,7 +23,7 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 
 from . import __version__
-from .history import delete_project_session, list_project_sessions
+from .history import delete_project_session, list_project_sessions, read_transcript
 from .protocol import (
     CheckPath,
     DeleteSession,
@@ -33,6 +33,9 @@ from .protocol import (
     FileUploaded,
     HandoffState,
     Hello,
+    GetHistory,
+    History,
+    HistoryMessage,
     Input,
     KillSession,
     ListDir,
@@ -324,6 +327,9 @@ class WsServer:
         elif isinstance(msg, ListSessions):
             await self._send_project_sessions(ws, msg.cwd)
 
+        elif isinstance(msg, GetHistory):
+            await self._send_history(ws, msg)
+
         elif isinstance(msg, DeleteSession):
             try:
                 delete_project_session(msg.cwd, msg.id)
@@ -563,6 +569,28 @@ class WsServer:
                         messages=p.messages,
                     )
                     for p in found
+                ],
+            ),
+        )
+
+    async def _send_history(self, ws: ServerConnection, msg: GetHistory) -> None:
+        """Send a session's conversation transcript for the phone's scroll-back
+        view. Prefer the session's known Claude conversation id; fall back to the
+        newest transcript in the cwd (a fresh session Claude is writing live)."""
+        session = self.sessions.get(msg.session)
+        cc_id = session.cc_session_id if session is not None else ""
+        cwd = str(session.cwd) if session is not None and session.cwd else msg.cwd
+        try:
+            found = read_transcript(cwd, cc_id, limit=msg.limit)
+        except Exception as e:
+            await self._send(ws, Error(code="bad_message", message=str(e)))
+            return
+        await self._send(
+            ws,
+            History(
+                session=msg.session,
+                messages=[
+                    HistoryMessage(role=m.role, text=m.text, ts=m.ts) for m in found
                 ],
             ),
         )

@@ -15,6 +15,9 @@ import com.claude.remote.model.CheckPath
 import com.claude.remote.model.DirListing
 import com.claude.remote.model.FileUpload
 import com.claude.remote.model.FileUploaded
+import com.claude.remote.model.GetHistory
+import com.claude.remote.model.History
+import com.claude.remote.model.HistoryMessage
 import com.claude.remote.model.Input
 import com.claude.remote.model.DeleteSession
 import com.claude.remote.model.HandoffState
@@ -116,6 +119,11 @@ class SessionService : Service() {
     // Past Claude sessions for the project folder currently being browsed.
     private val _projectSessions = MutableStateFlow<List<ProjectSessionInfo>>(emptyList())
     val projectSessions: StateFlow<List<ProjectSessionInfo>> = _projectSessions.asStateFlow()
+
+    // Conversation transcript for the session whose history view is open.
+    // null = not loaded yet (spinner); empty list = loaded, no messages.
+    private val _history = MutableStateFlow<List<HistoryMessage>?>(null)
+    val history: StateFlow<List<HistoryMessage>?> = _history.asStateFlow()
 
     // Results of check_path requests, keyed by the requested path → is-a-dir.
     private val _pathChecks = MutableStateFlow<Map<String, Boolean>>(emptyMap())
@@ -304,6 +312,8 @@ class SessionService : Service() {
 
             is ProjectSessions -> _projectSessions.value = msg.sessions
 
+            is History -> _history.value = msg.messages
+
             is PathChecked -> _pathChecks.value = _pathChecks.value + (msg.path to msg.isDir)
 
             is DirListing -> _dirListing.value = msg
@@ -370,6 +380,16 @@ class SessionService : Service() {
     /** Delete a past session's transcript; daemon replies with the refreshed list. */
     fun deleteProjectSession(cwd: String, id: String) =
         client?.send(DeleteSession(cwd, id))
+
+    /** Request a live session's conversation transcript for the scroll-back view.
+     *  Clears prior history first so the view shows a spinner until it arrives. */
+    fun requestHistory(session: String, cwd: String, limit: Int = 0) {
+        _history.value = null
+        client?.send(GetHistory(session = session, cwd = cwd, limit = limit))
+    }
+
+    /** Drop the loaded history when the view closes. */
+    fun clearHistory() { _history.value = null }
 
     fun attach(sessionId: String) {
         // Remember which terminal is open so a reconnect can re-attach it.

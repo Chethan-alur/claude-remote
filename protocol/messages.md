@@ -85,6 +85,29 @@ updates), or `error` (`bad_message`) on an invalid id.
 
 `id` is the Claude session id (pass it back as `resume_id` in `session_create` to resume). `title` is the session's `ai-title` (or its first message). `modified` is epoch seconds of the transcript's last write; `messages` is a rough user+assistant turn count. Newest first.
 
+### get_history (phone → daemon)
+
+```json
+{ "type": "get_history", "session": "sess_8a3f", "cwd": "/home/josh/code/webapp", "limit": 200 }
+```
+
+Asks for the conversation transcript of a live session so the phone can show a **scrollable history** — Claude's TUI runs in the terminal's alternate-screen buffer, which keeps no scrollback, so earlier turns are otherwise unrecoverable. The daemon locates the on-disk transcript by the session's known Claude conversation id, falling back to the newest transcript under `cwd` (the one a freshly-spawned session is writing live). `limit` keeps only the last N messages (0 = all). Daemon replies with `history`.
+
+### history (daemon → phone)
+
+```json
+{
+  "type": "history",
+  "session": "sess_8a3f",
+  "messages": [
+    { "role": "user", "text": "add tests", "ts": 1729267200 },
+    { "role": "assistant", "text": "Done.", "ts": 1729267260 }
+  ]
+}
+```
+
+The user/assistant turns of the conversation, **oldest first**. `role` is `user` or `assistant`; `text` is the message body with Claude's injected `<tags>` stripped; `ts` is epoch seconds (0 if the transcript entry carried no timestamp). Tool-only turns (no readable text) are omitted.
+
 ### session_created (daemon → phone)
 
 ```json

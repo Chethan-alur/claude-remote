@@ -14,8 +14,11 @@ from claude_remote_daemon.protocol import (
     Error,
     FileUpload,
     FileUploaded,
+    GetHistory,
     HandoffState,
     Hello,
+    History,
+    HistoryMessage,
     Input,
     KillSession,
     ListDir,
@@ -106,6 +109,14 @@ MESSAGES = [
     ),
     SetHandoff(enabled=True),
     HandoffState(enabled=False),
+    GetHistory(session="sess_1", cwd="/home/me/code/webapp", limit=200),
+    History(
+        session="sess_1",
+        messages=[
+            HistoryMessage(role="user", text="add tests", ts=1729267200),
+            HistoryMessage(role="assistant", text="Done.", ts=1729267260),
+        ],
+    ),
     Welcome(
         daemon_version="0.1.0",
         hostname="dev-box",

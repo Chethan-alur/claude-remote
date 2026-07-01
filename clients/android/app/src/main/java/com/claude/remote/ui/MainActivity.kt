@@ -148,6 +148,9 @@ private fun AppRoot(service: SessionService) {
     // ("" = the daemon's home directory).
     var dirBrowseStart by rememberSaveable { mutableStateOf<String?>(null) }
     var onConnections by rememberSaveable { mutableStateOf(true) }
+    // When true, the open session's scrollable conversation history is shown
+    // instead of the live terminal (Claude's alt-screen keeps no scrollback).
+    var showHistory by rememberSaveable { mutableStateOf(false) }
 
     // When a session is created or resumed, jump straight to its terminal.
     LaunchedEffect(lastCreated) {
@@ -176,21 +179,36 @@ private fun AppRoot(service: SessionService) {
                 }
             }
             // Subscribe to the session's output stream once when it is opened.
-            LaunchedEffect(open) { service.attach(open) }
-            BackHandler { openId = null }
-            val openAdopted = sessions.firstOrNull { it.id == open }?.origin == "adopted"
-            TerminalScreen(
-                sessionId = open,
-                output = output,
-                connState = connState,
-                uploadedPath = uploadedPath,
-                onConsumeUploadedPath = { service.consumeUploadedPath() },
-                onAttachFile = { picker.launch(arrayOf("*/*")) },
-                onBack = { openId = null },
-                onSendInput = { service.sendInput(open, it) },
-                onResize = { cols, rows -> service.resizePty(open, cols, rows) },
-                adopted = openAdopted,
-            )
+            LaunchedEffect(open) { service.attach(open); showHistory = false }
+            val openInfo = sessions.firstOrNull { it.id == open }
+            val openAdopted = openInfo?.origin == "adopted"
+            if (showHistory) {
+                val history by service.history.collectAsState()
+                BackHandler { showHistory = false; service.clearHistory() }
+                HistoryScreen(
+                    sessionName = openInfo?.name ?: open,
+                    messages = history,
+                    onBack = { showHistory = false; service.clearHistory() },
+                )
+            } else {
+                BackHandler { openId = null }
+                TerminalScreen(
+                    sessionId = open,
+                    output = output,
+                    connState = connState,
+                    uploadedPath = uploadedPath,
+                    onConsumeUploadedPath = { service.consumeUploadedPath() },
+                    onAttachFile = { picker.launch(arrayOf("*/*")) },
+                    onBack = { openId = null },
+                    onSendInput = { service.sendInput(open, it) },
+                    onResize = { cols, rows -> service.resizePty(open, cols, rows) },
+                    onShowHistory = {
+                        service.requestHistory(open, openInfo?.cwd ?: "")
+                        showHistory = true
+                    },
+                    adopted = openAdopted,
+                )
+            }
         }
 
         dirBrowseStart != null -> {
