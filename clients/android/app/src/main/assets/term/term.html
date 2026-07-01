@@ -22,8 +22,11 @@
     // tells the daemon to resize the PTY (SIGWINCH) so claude's TUI reflows to
     // the same width. cols/rows here are therefore dynamic, not fixed.
     var term = new Terminal({
+      // Generous scrollback so a long claude session's history stays scrollable
+      // on the phone. ~20k lines is cheap in memory and comfortably exceeds the
+      // daemon's ~1 MB reconnect-replay window.
       fontSize: 12,
-      scrollback: 5000,
+      scrollback: 20000,
       disableStdin: false,
       convertEol: false,
       theme: { background: '#000000' }
@@ -64,6 +67,25 @@
       term.resize(g.cols, g.rows);
       if (window.AndroidInput && AndroidInput.resize) AndroidInput.resize(g.cols, g.rows);
     }
+
+    // Cell dimensions are only measurable after xterm's first render, which on
+    // a WebView lags behind load / the ResizeObserver's first callback — so the
+    // fit() calls below can all see null geometry and never report a size. Poll
+    // fit() until it succeeds (lastCols becomes non-zero) so the PTY is sized to
+    // the phone; otherwise claude renders at the default 80/120-col width and
+    // wraps into an unreadable mess.
+    var fitAttempts = 0;
+    function ensureFit() {
+      fit();
+      if (lastCols === 0 && fitAttempts < 50) {
+        fitAttempts++;
+        setTimeout(ensureFit, 100);
+      }
+    }
+
+    // The first render is the earliest reliable point the cell size exists;
+    // fit() there. onRender fires often, but fit() early-returns when unchanged.
+    term.onRender(function () { fit(); });
 
     // Refit whenever the WebView changes size (rotation, soft keyboard, the
     // control-key row toggling). ResizeObserver covers all of these.
@@ -128,12 +150,11 @@
     // Force a resize report even if the grid is unchanged — used when the same
     // WebView is reused for a different session, whose new PTY still defaults to
     // the daemon's spawn size and must be told this phone's dimensions.
-    window.termRefit = function () { lastCols = 0; lastRows = 0; fit(); };
+    window.termRefit = function () { lastCols = 0; lastRows = 0; fitAttempts = 0; ensureFit(); };
 
-    // The renderer needs a tick to measure the cell size after open(); fit then,
-    // and once more shortly after in case web-font metrics settle late.
-    setTimeout(fit, 0);
-    setTimeout(fit, 250);
+    // Kick off the retry loop; onRender (above) also drives it once the first
+    // paint measures the cell size.
+    ensureFit();
     window.__termReady = true;
   </script>
 </body>

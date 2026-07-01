@@ -34,3 +34,8 @@ clients/android/keystore/
 
 ### Claude Code local tooling ###
 .claude/
+
+### Runtime artifacts (logs, captures, uploads) ###
+*.log
+logcat.txt
+/uploads/

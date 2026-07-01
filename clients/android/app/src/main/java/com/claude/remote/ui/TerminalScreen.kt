@@ -1,7 +1,10 @@
 package com.claude.remote.ui
 
 import android.annotation.SuppressLint
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -182,6 +185,14 @@ fun TerminalScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 factory = { ctx ->
                     WebView(ctx).apply {
+                        // Fill the space the weight(1f) modifier allocates.
+                        // Without explicit MATCH_PARENT params the WebView
+                        // self-measures its (empty) content to zero height, so
+                        // the terminal collapses to 0 px tall and nothing shows.
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         // Focusable so tapping the terminal opens the soft
@@ -205,6 +216,14 @@ fun TerminalScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 ready = true
+                            }
+                        }
+                        // Forward xterm.js console output to logcat (tag TermJS)
+                        // so terminal-side geometry/fit issues are diagnosable.
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+                                Log.d("TermJS", "${m.message()} @${m.lineNumber()}")
+                                return true
                             }
                         }
                         loadUrl("file:///android_asset/term/term.html")
