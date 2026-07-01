@@ -269,6 +269,12 @@ class WsServer:
 
             # 3. Main loop
             attached_tasks: list[asyncio.Task] = []
+            # Session ids this connection is already subscribed to, so a second
+            # attach (e.g. the app's explicit session_attach after the daemon
+            # auto-attaches it on session_create) does not create a duplicate
+            # fan-out queue — which would deliver every Output frame twice and
+            # corrupt the client's terminal render.
+            attached_ids: set[str] = set()
             try:
                 async for raw in ws:
                     try:
@@ -276,7 +282,7 @@ class WsServer:
                     except Exception as e:
                         await self._send(ws, Error(code="bad_message", message=str(e)))
                         continue
-                    await self._dispatch(ws, msg, attached_tasks)
+                    await self._dispatch(ws, msg, attached_tasks, attached_ids)
             finally:
                 self._clients.discard(ws)
                 for t in attached_tasks:
@@ -291,6 +297,7 @@ class WsServer:
         ws: ServerConnection,
         msg,
         attached_tasks: list[asyncio.Task],
+        attached_ids: set[str],
     ) -> None:
         """Route one incoming message to the right handler.
 
@@ -309,7 +316,10 @@ class WsServer:
                 )
                 return
             await self._send(ws, SessionCreated(id=s.id, name=s.name, cwd=str(s.cwd)))
-            await self._attach(ws, s, replay_bytes=0, attached_tasks=attached_tasks)
+            await self._attach(
+                ws, s, replay_bytes=0,
+                attached_tasks=attached_tasks, attached_ids=attached_ids,
+            )
 
         elif isinstance(msg, ListSessions):
             await self._send_project_sessions(ws, msg.cwd)
@@ -331,7 +341,8 @@ class WsServer:
                 )
                 return
             await self._attach(
-                ws, session, replay_bytes=msg.replay_bytes, attached_tasks=attached_tasks
+                ws, session, replay_bytes=msg.replay_bytes,
+                attached_tasks=attached_tasks, attached_ids=attached_ids,
             )
 
         elif isinstance(msg, Input):
@@ -386,7 +397,7 @@ class WsServer:
             self.sessions.remove(msg.id)
 
         elif isinstance(msg, TakeOver):
-            await self._take_over(ws, msg.id, attached_tasks)
+            await self._take_over(ws, msg.id, attached_tasks, attached_ids)
 
         elif isinstance(msg, CheckPath):
             p = Path(msg.path).expanduser()
@@ -414,7 +425,11 @@ class WsServer:
             )
 
     async def _take_over(
-        self, ws: ServerConnection, session_id: str, attached_tasks: list[asyncio.Task]
+        self,
+        ws: ServerConnection,
+        session_id: str,
+        attached_tasks: list[asyncio.Task],
+        attached_ids: set[str],
     ) -> None:
         """Take control of an adopted (desktop) session from the app.
 
@@ -464,7 +479,10 @@ class WsServer:
             return
 
         await self._send(ws, SessionCreated(id=s.id, name=s.name, cwd=str(s.cwd)))
-        await self._attach(ws, s, replay_bytes=0, attached_tasks=attached_tasks)
+        await self._attach(
+            ws, s, replay_bytes=0,
+            attached_tasks=attached_tasks, attached_ids=attached_ids,
+        )
 
         if not killed:
             await self._send(
@@ -486,6 +504,7 @@ class WsServer:
         session,
         replay_bytes: int,
         attached_tasks: list[asyncio.Task],
+        attached_ids: set[str],
     ) -> None:
         """Subscribe this client to a session's frame stream.
 
@@ -493,7 +512,18 @@ class WsServer:
         spawns a task that forwards every queued frame to the socket. The task
         removes its queue on disconnect so the session stops fanning out to a
         dead client.
+
+        Idempotent per connection: if this socket is already subscribed to the
+        session, do nothing. The app sends an explicit `session_attach` after
+        opening a terminal, but a freshly created (or taken-over) session is
+        already auto-attached on `session_create`; without this guard the
+        second attach would add a second fan-out queue, so every Output frame
+        would arrive twice and corrupt the client's terminal render.
         """
+        if session.id in attached_ids:
+            return
+        attached_ids.add(session.id)
+
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_MAX)
         session.subscribers.append(q)
 
@@ -514,6 +544,7 @@ class WsServer:
             finally:
                 if q in session.subscribers:
                     session.subscribers.remove(q)
+                attached_ids.discard(session.id)
 
         attached_tasks.append(asyncio.create_task(pump()))
 

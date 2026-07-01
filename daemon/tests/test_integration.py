@@ -26,7 +26,10 @@ from claude_remote_daemon.protocol import (
     ListDir,
     ListSessions,
     Output,
+    Ping,
+    Pong,
     ProjectSessions,
+    SessionAttach,
     SessionCreate,
     SessionCreated,
     Welcome,
@@ -91,6 +94,44 @@ async def test_create_output_input_round_trip(tmp_path):
                     ws,
                     lambda f: isinstance(f, Output) and "ping" in f.data,
                 )
+        finally:
+            await sessions.shutdown()
+
+
+async def test_explicit_attach_after_create_does_not_double_subscribe(tmp_path):
+    """A session is auto-attached on session_create; the app then sends an
+    explicit session_attach when it opens the terminal. The second attach must
+    not add a second fan-out queue, or every Output frame would arrive twice
+    and corrupt the terminal render (blank/garbled buffer on new sessions)."""
+    auth = AuthStore(tmp_path / "devices.json")
+    sessions = SessionManager(
+        hook_socket=str(tmp_path / "hook.sock"), claude_cmd=FAKE_CLAUDE
+    )
+    hooks = HookBridge(str(tmp_path / "hook.sock"), sessions)
+    server = WsServer("127.0.0.1", 0, sessions, hooks, auth)
+
+    async with websockets.serve(server._handle, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}/") as ws:
+                await ws.send(encode(Hello(token="x")))
+                await ws.recv()  # welcome
+                await ws.send(encode(SessionCreate(name="t", cwd=str(tmp_path))))
+                frames = await _recv_until(ws, lambda f: isinstance(f, SessionCreated))
+                sid = next(f.id for f in frames if isinstance(f, SessionCreated))
+
+                # Auto-attach happened on create -> exactly one subscriber.
+                assert len(sessions.get(sid).subscribers) == 1
+
+                # The app's explicit attach for the same session on the same
+                # connection. A Ping/Pong barrier guarantees it has been fully
+                # dispatched (per-connection dispatch is sequential) before we
+                # inspect the subscriber count.
+                await ws.send(encode(SessionAttach(id=sid, replay_bytes=0)))
+                await ws.send(encode(Ping(ts=1)))
+                await _recv_until(ws, lambda f: isinstance(f, Pong))
+
+                assert len(sessions.get(sid).subscribers) == 1
         finally:
             await sessions.shutdown()
 
