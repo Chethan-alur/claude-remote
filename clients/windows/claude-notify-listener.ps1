@@ -166,11 +166,12 @@ catch { Write-Host "WARN: could not register '$Scheme' scheme: $($_.Exception.Me
 function Esc([string]$s) { [System.Security.SecurityElement]::Escape($s) }
 
 function Show-Toast {
-    param([string]$Message)
+    param([string]$Message, [string]$Session)
     # Clicking the toast body focuses the session (no decision to record).
     $focusUrl = "${Scheme}:focus"
+    $hdr = if ($Session) { "Claude Code - $Session" } else { "Claude Code" }
     $xml = @"
-<toast launch="$(Esc $focusUrl)" activationType="protocol"><visual><binding template="ToastGeneric"><text>Claude Code</text><text>$(Esc $Message)</text></binding></visual></toast>
+<toast launch="$(Esc $focusUrl)" activationType="protocol"><visual><binding template="ToastGeneric"><text>$(Esc $hdr)</text><text>$(Esc $Message)</text></binding></visual></toast>
 "@
     $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
     $doc.LoadXml($xml)
@@ -179,15 +180,16 @@ function Show-Toast {
 }
 
 function Show-PromptToast {
-    param([string]$Id, [string]$Message, [int]$Port)
+    param([string]$Id, [string]$Message, [int]$Port, [string]$Session)
     # Custom scheme instead of http:// -> no browser tab, no focus theft.
     $allowUrl = "${Scheme}:decide?id=$Id&v=allow&port=$Port"
     $denyUrl  = "${Scheme}:decide?id=$Id&v=deny&port=$Port"
     # `tag` lets us programmatically dismiss this toast on permission_resolved.
     $tag = ($Id -replace '[^A-Za-z0-9_.-]', '_')
     if ($tag.Length -gt 16) { $tag = $tag.Substring(0, 16) }
+    $hdr = if ($Session) { "$Session - permission needed" } else { "Claude Code needs permission" }
     $xml = @"
-<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>Claude Code needs permission</text><text>$(Esc $Message)</text></binding></visual><actions><action content="Approve" activationType="protocol" arguments="$(Esc $allowUrl)"/><action content="Deny" activationType="protocol" arguments="$(Esc $denyUrl)"/></actions></toast>
+<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>$(Esc $hdr)</text><text>$(Esc $Message)</text></binding></visual><actions><action content="Approve" activationType="protocol" arguments="$(Esc $allowUrl)"/><action content="Deny" activationType="protocol" arguments="$(Esc $denyUrl)"/></actions></toast>
 "@
     $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
     $doc.LoadXml($xml)
@@ -243,8 +245,8 @@ function Handle-Frame([string]$raw) {
     try { $msg = $raw | ConvertFrom-Json } catch { return }
     switch ($msg.type) {
         'permission_request' {
-            Write-Host ("[{0}] permission {1}: {2}" -f (Get-Date -Format HH:mm:ss), $msg.id, $msg.summary)
-            Show-PromptToast -Id $msg.id -Message $msg.summary -Port $CallbackPort
+            Write-Host ("[{0}] permission {1} ({2}): {3}" -f (Get-Date -Format HH:mm:ss), $msg.id, $msg.session_name, $msg.summary)
+            Show-PromptToast -Id $msg.id -Message $msg.summary -Port $CallbackPort -Session $msg.session_name
         }
         'permission_resolved' {
             Write-Host ("[{0}] resolved {1} ({2})" -f (Get-Date -Format HH:mm:ss), $msg.id, $msg.reason)
@@ -252,8 +254,8 @@ function Handle-Frame([string]$raw) {
         }
         'notification' {
             $m = if ($msg.message) { $msg.message } else { 'Claude Code needs your attention' }
-            Write-Host ("[{0}] notify: {1}" -f (Get-Date -Format HH:mm:ss), $m)
-            Show-Toast -Message $m
+            Write-Host ("[{0}] notify ({1}): {2}" -f (Get-Date -Format HH:mm:ss), $msg.session_name, $m)
+            Show-Toast -Message $m -Session $msg.session_name
         }
         default { } # welcome / sessions_update / output / etc. — ignored
     }

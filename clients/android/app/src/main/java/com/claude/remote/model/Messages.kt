@@ -177,6 +177,7 @@ data class PermissionRequest(
     val input: JsonElement,
     val summary: String,
     @SerialName("received_at") val receivedAt: Long,
+    @SerialName("session_name") val sessionName: String = "",
 ) : Message
 
 @Serializable
@@ -191,9 +192,10 @@ data class PermissionResolved(
 @SerialName("notification")
 data class Notification(
     val session: String,
-    val kind: String, // task_complete | error | permission_timeout | info
+    val kind: String, // task_complete | error | permission_timeout | warning | info
     val message: String,
     val ts: Long,
+    @SerialName("session_name") val sessionName: String = "",
 ) : Message
 
 @Serializable

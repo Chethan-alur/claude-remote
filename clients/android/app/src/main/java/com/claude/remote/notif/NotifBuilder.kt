@@ -73,10 +73,13 @@ class NotifBuilder(private val ctx: Context) {
 
     fun postPermissionRequest(req: PermissionRequest) {
         val notifId = req.id.hashCode()
+        // Lead with the session/project so the user knows which session is asking.
+        val label = req.sessionName.ifBlank { req.session }
         val n = NotificationCompat.Builder(ctx, CHAN_PERMISSIONS)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setColor(accent)
-            .setContentTitle("${req.tool} permission requested")
+            .setContentTitle("$label · ${req.tool} permission")
+            .setSubText(label)
             .setContentText(req.summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(req.summary))
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -95,11 +98,13 @@ class NotifBuilder(private val ctx: Context) {
 
     fun cancelPermission(reqId: String) = mgr.cancel(reqId.hashCode())
 
-    fun postTaskComplete(sessionId: String, message: String) {
+    fun postTaskComplete(sessionId: String, sessionName: String, message: String) {
+        val label = sessionName.ifBlank { sessionId }
         val n = NotificationCompat.Builder(ctx, CHAN_COMPLETE)
             .setSmallIcon(R.drawable.ic_stat_claude)
             .setColor(accent)
-            .setContentTitle("Task complete")
+            .setContentTitle("Task complete · $label")
+            .setSubText(label)
             .setContentText(message)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

@@ -80,6 +80,7 @@ async def test_permission_allow_round_trip():
     assert isinstance(frame, PermissionRequest)
     assert frame.tool == "Bash"
     assert "ls -la" in frame.summary
+    assert frame.session_name == "t"  # carries the session name so clients can identify it
     assert session.status == Status.WAITING
 
     bridge.resolve(frame.id, "allow")

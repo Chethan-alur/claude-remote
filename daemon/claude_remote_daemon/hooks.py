@@ -265,6 +265,7 @@ class HookBridge:
                     kind="task_complete",
                     message="Claude finished its turn",
                     ts=int(time()),
+                    session_name=session.name,
                 ),
             )
             return {}
@@ -304,6 +305,7 @@ class HookBridge:
                 input=tool_input,
                 summary=self._summarize(tool, tool_input),
                 received_at=int(time()),
+                session_name=session.name,
             ),
         )
 
@@ -373,7 +375,8 @@ class HookBridge:
         self._broadcast(
             session,
             Notification(
-                session=session.id, kind="info", message=message, ts=int(time())
+                session=session.id, kind="info", message=message, ts=int(time()),
+                session_name=session.name,
             ),
         )
 

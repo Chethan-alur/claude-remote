@@ -330,7 +330,7 @@ class SessionService : Service() {
                 when (msg.kind) {
                     "task_complete" -> {
                         updateStatus(msg.session, "idle")
-                        notif.postTaskComplete(msg.session, msg.message)
+                        notif.postTaskComplete(msg.session, msg.sessionName, msg.message)
                     }
                     // Surface a warning (e.g. takeover could not stop the desktop
                     // session) via the app's transient message channel.

@@ -225,6 +225,7 @@ class PermissionRequest:
     input: dict[str, Any]
     summary: str
     received_at: int
+    session_name: str = ""  # human name/project, so a notification identifies its session
     type: str = "permission_request"
 
 
@@ -245,6 +246,7 @@ class Notification:
     kind: str  # task_complete | error | permission_timeout | warning | info
     message: str
     ts: int
+    session_name: str = ""  # human name/project, so a notification identifies its session
     type: str = "notification"
 
 

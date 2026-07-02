@@ -78,8 +78,12 @@ MESSAGES = [
         input={"command": "ls -la"},
         summary="Bash: ls -la",
         received_at=1729267200,
+        session_name="webapp",
     ),
-    Notification(session="sess_1", kind="task_complete", message="done", ts=1729267260),
+    Notification(
+        session="sess_1", kind="task_complete", message="done", ts=1729267260,
+        session_name="webapp",
+    ),
     PermissionResolved(id="req_1", reason="answered", decision="allow"),
     PermissionResolved(id="req_1", reason="expired"),
     Error(code="session_not_found", message="sess_x"),

@@ -149,9 +149,12 @@ Acknowledges a completed `file_upload`. `path` is the saved absolute path on the
   "tool": "Edit",
   "input": { "file_path": "src/auth.ts", "old_string": "...", "new_string": "..." },
   "summary": "Edit src/auth.ts (3 changes)",
-  "received_at": 1729267200
+  "received_at": 1729267200,
+  "session_name": "webapp"
 }
 ```
+
+`session_name` is the session's human name/project (the daemon's `Session.name`), so a client that keeps no session list — e.g. the Windows toast — can show *which* session/project the request is for.
 
 Daemon emits this when a `PermissionRequest` hook fires for a tool the user has not pre-approved. It is **broadcast to every connected client** (phone and desktop), each of which shows a notification and/or in-app card. `summary` is a single-line human description suitable for a notification body. `input` is the raw tool input — a client can show it expanded if the user taps for detail.
 
@@ -195,7 +198,8 @@ Note: a request answered at the **local** terminal cannot be detected by the dae
   "session": "sess_8a3f",
   "kind": "task_complete",
   "message": "Refactor complete · 3 files changed",
-  "ts": 1729267260
+  "ts": 1729267260,
+  "session_name": "webapp"
 }
 ```
 
