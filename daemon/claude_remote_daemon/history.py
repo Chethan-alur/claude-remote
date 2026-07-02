@@ -34,6 +34,13 @@ class ProjectSession:
     messages: int
 
 
+@dataclass
+class TranscriptMessage:
+    role: str  # user | assistant
+    text: str
+    ts: int  # epoch seconds, 0 if unknown
+
+
 def encode_project_dir(cwd: str) -> str:
     """Map an absolute cwd to Claude's project-directory name."""
     resolved = str(Path(cwd).expanduser().resolve())
@@ -81,6 +88,87 @@ def delete_project_session(
         return False
     target.unlink()
     return True
+
+
+def read_transcript(
+    cwd: str,
+    session_id: str = "",
+    limit: int = 0,
+    projects_root: Path = PROJECTS_ROOT,
+) -> list[TranscriptMessage]:
+    """Return the user/assistant messages of a conversation, oldest first.
+
+    `session_id` is the transcript file stem (Claude's own session id). When it
+    is empty — e.g. a freshly spawned session that has not yet revealed its id
+    via a hook — the newest transcript in the project directory is used, which
+    is the one Claude is actively writing. `limit` keeps only the last N
+    messages (0 = all). Returns [] if no transcript is found.
+    """
+    if session_id and (
+        "/" in session_id or "\\" in session_id or session_id in (".", "..")
+    ):
+        raise ValueError(f"invalid session id: {session_id!r}")
+
+    project_dir = (projects_root / encode_project_dir(cwd)).resolve()
+    if not project_dir.is_dir():
+        return []
+
+    path: Path | None = None
+    if session_id:
+        candidate = (project_dir / f"{session_id}.jsonl").resolve()
+        if candidate.parent == project_dir and candidate.is_file():
+            path = candidate
+    if path is None:  # fall back to the newest transcript in the project
+        transcripts = sorted(
+            project_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not transcripts:
+            return []
+        path = transcripts[0]
+
+    messages: list[TranscriptMessage] = []
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            role = obj.get("type")
+            if role not in ("user", "assistant"):
+                continue
+            text = _clean_body(_extract_text(obj))
+            if not text:
+                continue  # tool-only turns carry no readable text
+            messages.append(TranscriptMessage(role=role, text=text, ts=_ts(obj)))
+
+    if limit and len(messages) > limit:
+        messages = messages[-limit:]
+    return messages
+
+
+def _ts(entry: dict) -> int:
+    """Best-effort epoch seconds from an entry's ISO 'timestamp'; 0 if absent."""
+    raw = entry.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return 0
+    try:
+        from datetime import datetime
+
+        return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+
+
+def _clean_body(text: str | None) -> str:
+    """Strip Claude's injected <tags> but keep the message body intact."""
+    if not text:
+        return ""
+    return _TAG_RE.sub("", text).strip()
 
 
 def _read_session(path: Path) -> ProjectSession:
