@@ -320,7 +320,12 @@ try {
         }
         if ($null -eq $httpTask) { $httpTask = $http.GetContextAsync() }
 
-        $idx = [System.Threading.Tasks.Task]::WaitAny(@($recvTask, $httpTask), 1000)
+        # Build a strongly-typed Task[] — PowerShell will not reliably coerce a
+        # plain object[] of differently-typed Task<T> into the Task[] that
+        # WaitAny(Task[], int) requires, and a bind failure would throw out of
+        # the loop and kill the listener right after "connected".
+        $tasks = [System.Threading.Tasks.Task[]]@($recvTask, $httpTask)
+        $idx = [System.Threading.Tasks.Task]::WaitAny($tasks, 1000)
 
         if ($idx -eq 0) {
             try {
