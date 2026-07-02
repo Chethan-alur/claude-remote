@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
@@ -22,6 +23,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -44,6 +46,13 @@ fun HistoryScreen(
     messages: List<HistoryMessage>?,
     onBack: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    // Open on the newest message: jump to the last item once the transcript
+    // loads (or grows). Non-animated so the view never flashes the oldest turn.
+    LaunchedEffect(messages?.size) {
+        val count = messages?.size ?: 0
+        if (count > 0) listState.scrollToItem(count - 1)
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -71,6 +80,7 @@ fun HistoryScreen(
             }
 
             else -> LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
