@@ -1,0 +1,4 @@
+# Normalise line endings: git stores text as LF and checks out LF everywhere,
+# so editing on Windows (or a tool re-saving as CRLF) no longer turns whole
+# files into churn. `text=auto` still auto-detects binaries and leaves them be.
+* text=auto eol=lf
