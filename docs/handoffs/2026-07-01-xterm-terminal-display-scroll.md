@@ -155,7 +155,28 @@ won't help, because there is no scrollback to scroll.
 
 ## Results
 
-> Filled in by the receiving session.
+Filled in by the receiving Windows/adb session (2026-07-01):
 
-- Outcome per checklist item (pass/fail + notes).
-- logcat / daemon.log excerpts for any failure.
+- **Display + geometry:** confirmed fixed on device; already merged to `main`
+  (`127d106`) and reconciled with a parallel host's fixes (`d150bce`). `main`'s
+  `term.html` uses `position:fixed; inset:0` + a `requestAnimationFrame` fit
+  retry; `TerminalScreen.kt` sets `MATCH_PARENT` layout params and a
+  `WebChromeClient`. Also folded in: an IME fix (`VISIBLE_PASSWORD |
+  NO_SUGGESTIONS`) so Gboard stops composing — per-key input and Backspace now
+  reach the PTY (verified: each key fires `onData`; Backspace emits DEL `0x7f`) —
+  and an `onData` filter that swallows mouse-tracking reports so a tap focuses
+  instead of clicking in the TUI. Scrollback raised to 50000.
+- **Scroll — resolved, not via terminal scrollback.** Confirmed the diagnosis:
+  Claude's alt-screen buffer holds no scrollback and scrolled-off turns are
+  never re-emitted, so neither forwarding keys (Option A) nor buffering the byte
+  stream can recover history. Instead added an **Android-side conversation
+  history view** sourced from Claude's on-disk `.jsonl`: new `get_history` /
+  `history` protocol messages (three-way sync done), daemon `read_transcript`
+  (validated against a real 1.9 MB transcript → 143 msgs parsed), and a
+  read-only scrollable `HistoryScreen` reached from a history icon in the
+  terminal top bar. Daemon suite 90 passed, ruff clean; Android builds.
+- **Pending:** live app→daemon→transcript round-trip needs the updated daemon
+  deployed on the VM (its running copy predates `get_history`).
+
+**Status → resolved** once the live round-trip is verified; safe to delete this
+note thereafter.

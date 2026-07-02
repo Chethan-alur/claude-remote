@@ -9,6 +9,7 @@ from claude_remote_daemon.history import (
     delete_project_session,
     encode_project_dir,
     list_project_sessions,
+    read_transcript,
 )
 
 
@@ -56,6 +57,59 @@ def test_lists_sessions_with_titles_newest_first(tmp_path, monkeypatch):
 
 def test_unknown_project_returns_empty(tmp_path):
     assert list_project_sessions("/no/such/project", projects_root=tmp_path) == []
+
+
+def test_read_transcript_by_id_extracts_messages(tmp_path):
+    cwd = "/home/me/proj"
+    proj = tmp_path / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+    lines = [
+        {"type": "user", "message": {"content": "hello there"},
+         "timestamp": "2026-06-30T10:00:00Z"},
+        {"type": "assistant",
+         "message": {"content": [{"type": "text", "text": "Hi!"}]},
+         "timestamp": "2026-06-30T10:00:05Z"},
+        # tool-only assistant turn carries no readable text -> skipped
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t"}]}},
+        {"type": "ai-title", "aiTitle": "greeting"},  # non-message entry -> skipped
+    ]
+    (proj / "sess-1.jsonl").write_text(
+        "\n".join(json.dumps(o) for o in lines), encoding="utf-8"
+    )
+
+    msgs = read_transcript(cwd, "sess-1", projects_root=tmp_path)
+    assert [(m.role, m.text) for m in msgs] == [
+        ("user", "hello there"),
+        ("assistant", "Hi!"),  # text block extracted; tool-only turn skipped
+    ]
+    assert msgs[0].ts == 1_782_813_600  # 2026-06-30T10:00:00Z in epoch seconds
+
+
+def test_read_transcript_limits_and_falls_back_to_newest(tmp_path):
+    cwd = "/home/me/proj"
+    proj = tmp_path / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+    old = proj / "old.jsonl"
+    new = proj / "new.jsonl"
+    old.write_text(json.dumps({"type": "user", "message": {"content": "old"}}), "utf-8")
+    new.write_text(
+        "\n".join(
+            json.dumps({"type": "user", "message": {"content": f"m{i}"}}) for i in range(5)
+        ),
+        "utf-8",
+    )
+    import os
+    os.utime(old, (1_000, 1_000))
+    os.utime(new, (2_000, 2_000))
+
+    # No id -> newest transcript; limit keeps the last N.
+    msgs = read_transcript(cwd, "", limit=2, projects_root=tmp_path)
+    assert [m.text for m in msgs] == ["m3", "m4"]
+
+
+def test_read_transcript_rejects_path_traversal(tmp_path):
+    with pytest.raises(ValueError):
+        read_transcript("/home/me/proj", "../secrets", projects_root=tmp_path)
 
 
 def test_delete_removes_transcript(tmp_path):
